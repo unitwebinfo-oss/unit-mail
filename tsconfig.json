@@ -11,9 +11,8 @@
     "isolatedModules": true,
     "noEmit": true,
     "types": ["node", "vite/client"],
-    "baseUrl": ".",
     "paths": {
-      "@shared/*": ["src/shared/*"]
+      "@shared/*": ["./src/shared/*"]
     }
   },
   "include": ["src/**/*", "electron.vite.config.ts"]
