@@ -1,0 +1,62 @@
+name: Release
+
+# Roda quando uma tag "v*" é publicada: git tag v0.1.0 && git push --tags
+# Gera os pacotes de cada SO e anexa tudo na Release do GitHub.
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  linux:
+    name: Linux (AppImage, deb, rpm, pacman, tar.gz)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run dist:linux
+
+      - name: Publica pacotes Linux na Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release/*.AppImage
+            release/*.deb
+            release/*.rpm
+            release/*.pacman
+            release/*.tar.gz
+
+  windows:
+    name: Windows (NSIS + portable)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+      - run: npx electron-builder --win --x64
+
+      - name: Publica executáveis Windows na Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release/*.exe
+            release/*.blockmap

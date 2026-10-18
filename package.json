@@ -42,7 +42,9 @@
     "linux": {
       "target": [
         "AppImage",
+        "deb",
         "rpm",
+        "pacman",
         "tar.gz"
       ],
       "icon": "build/icon.png",

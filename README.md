@@ -34,17 +34,26 @@ Baixe o pacote da sua preferência em
 [Releases](https://github.com/unitwebinfo-oss/unit-mail/releases):
 
 ```bash
+# Ubuntu / Debian / Mint — pacote .deb:
+sudo apt install ./unit-mail_0.1.0_amd64.deb     # ou: sudo dpkg -i ...
+
+# Fedora / RHEL / openSUSE — pacote RPM:
+sudo dnf install unit-mail-0.1.0.x86_64.rpm      # ou: sudo rpm -i ...
+
+# Arch / Manjaro — pacote .pacman:
+sudo pacman -U unit-mail-0.1.0.pacman
+
 # AppImage — qualquer distribuição, sem instalar:
 chmod +x "Unit Mail-0.1.0.AppImage"
 ./"Unit Mail-0.1.0.AppImage"
 
-# Fedora / RHEL / openSUSE — pacote RPM:
-sudo dnf install "unit-mail-0.1.0.x86_64.rpm"      # ou: sudo rpm -i ...
-
 # Qualquer distro — tar.gz (extrai e roda):
-tar -xzf "unit-mail-0.1.0.tar.gz"
+tar -xzf unit-mail-0.1.0.tar.gz
 ./unit-mail-0.1.0/unit-mail
 ```
+
+Os pacotes são gerados automaticamente pelo GitHub Actions a cada tag —
+não precisa compilar na sua máquina.
 
 ### Linux compilando a partir do código
 
@@ -52,7 +61,7 @@ tar -xzf "unit-mail-0.1.0.tar.gz"
 git clone https://github.com/unitwebinfo-oss/unit-mail.git
 cd unit-mail
 npm install
-npm run dist:linux   # gera AppImage, RPM e tar.gz em release/
+npm run dist:linux   # gera AppImage, .deb, .rpm, .pacman e tar.gz em release/
 ```
 
 Para rodar direto sem empacotar: `npm start` (produção) ou `npm run dev`
