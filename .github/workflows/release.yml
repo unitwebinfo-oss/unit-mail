@@ -10,6 +10,12 @@ on:
 permissions:
   contents: write
 
+# GH_TOKEN autentica os downloads que o electron-builder faz do GitHub
+# (Electron, NSIS, appimagetool, fpm…) — sem ele o rate-limit anônimo derrubava
+# os dois jobs no meio do empacotamento (exit 1 sem mensagem clara).
+env:
+  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
 jobs:
   linux:
     name: Linux (AppImage, deb, rpm, pacman, tar.gz)
@@ -25,7 +31,16 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm test
-      - run: npm run dist:linux
+      - run: npm run build
+
+      # Um target por invocação: se um formato falhar (ex.: pacman), os demais
+      # ainda são gerados e publicados — a release não morre inteira por um.
+      - run: npx electron-builder --linux AppImage
+      - run: npx electron-builder --linux deb
+      - run: npx electron-builder --linux rpm
+      - run: npx electron-builder --linux pacman
+        continue-on-error: true
+      - run: npx electron-builder --linux tar.gz
 
       - name: Publica pacotes Linux na Release
         uses: softprops/action-gh-release@v2
