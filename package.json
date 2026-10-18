@@ -1,0 +1,95 @@
+{
+  "name": "unit-mail",
+  "version": "0.1.0",
+  "productName": "Unit Mail",
+  "description": "Cliente de email estilo Outlook 2016 para Linux (e Windows) com leitura de arquivos PST",
+  "license": "GPL-3.0-only",
+  "author": "Roger Oliveira",
+  "keywords": [
+    "email",
+    "pst",
+    "outlook",
+    "linux",
+    "fedora",
+    "electron",
+    "pop3",
+    "imap",
+    "smtp",
+    "calendario"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/unitwebinfo-oss/unit-mail.git"
+  },
+  "main": "./out/main/index.js",
+  "desktopName": "unit-mail",
+  "build": {
+    "appId": "com.unitmail.app",
+    "productName": "Unit Mail",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "out/**",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "build/icon.png",
+        "to": "icon.png"
+      }
+    ],
+    "linux": {
+      "target": [
+        "AppImage",
+        "rpm",
+        "tar.gz"
+      ],
+      "icon": "build/icon.png",
+      "category": "Network;Email",
+      "maintainer": "Roger Oliveira",
+      "description": "Cliente de email estilo Outlook 2016 com leitura de arquivos PST",
+      "syncDesktopName": true
+    },
+    "win": {
+      "target": [
+        "portable",
+        "nsis"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  },
+  "scripts": {
+    "dev": "node scripts/launch.js dev",
+    "build": "node scripts/launch.js build",
+    "start": "node scripts/launch.js preview",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run",
+    "dist": "npm run build && electron-builder",
+    "dist:linux": "npm run build && electron-builder --linux"
+  },
+  "devDependencies": {
+    "@types/mailparser": "^3.9.0",
+    "@types/nodemailer": "^8.0.2",
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.3.1",
+    "electron": "^31.0.0",
+    "electron-builder": "^26.17.0",
+    "electron-vite": "^2.3.0",
+    "typescript": "^5.5.3",
+    "vite": "^5.3.4",
+    "vitest": "^3.2.4"
+  },
+  "dependencies": {
+    "imapflow": "^2.4.0",
+    "mailparser": "^3.9.38",
+    "nodemailer": "^7.0.13",
+    "pst-extractor": "^1.10.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  }
+}

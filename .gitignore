@@ -1,0 +1,28 @@
+# Dependências e build
+node_modules/
+out/
+dist/
+release/
+
+# Logs e artefatos locais
+*.log
+nul
+.DS_Store
+Thumbs.db
+
+# Dados do usuário — NUNCA versionar (emails, contas, senhas)
+*.pst
+*.ost
+Data Stores/
+
+# Binários/DLLs do Microsoft Office copiados só para inspeção local —
+# material proprietário, não pode ser publicado no repositório
+Docs/Office16/
+
+# Editor
+.vscode/
+.idea/
+
+# Dados de perfil/sidecars do Unit Mail (nunca versionar)
+*.unitmail-data/
+*.CSV
