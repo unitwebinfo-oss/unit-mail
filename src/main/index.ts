@@ -1275,6 +1275,14 @@ function registerIpc(): void {
     ruleEngine.cancelTask(taskId);
     return true;
   });
+  // "Re-sincronizar do servidor" — esquece o que já foi processado para a
+  // conta e re-baixa tudo que ainda existe no servidor (a dedupe por pasta
+  // impede duplicar). Recuperação de mensagens marcadas como entregues por
+  // engano (ex.: diretório "D:\…" fantasma num backup restaurado).
+  ipcMain.handle('accounts:resetSync', (_e, accountId: string) => {
+    ruleEngine.resetSyncState(accountId);
+    return true;
+  });
   ipcMain.handle('settings:getSyncInterval', () => loadSettings().syncIntervalMin ?? 30);
   ipcMain.handle('settings:getLoadImages', () => loadSettings().loadRemoteImages ?? false);
   ipcMain.handle('settings:getSetupComplete', () => loadSettings().setupComplete ?? false);
@@ -1691,6 +1699,18 @@ async function restoreSession(): Promise<void> {
       seen.add(key);
       const alt = join(mailRoot(), anyBase(oldPath));
       if (existsSync(alt)) remapPstReferences(oldPath, alt);
+    }
+    // Entradas de registro com sintaxe de OUTRO SO que o remap não resolveu
+    // ("D:\…" no Linux, "/home/…" no Windows): nunca podem ser um destino
+    // válido — manter no localstores.json fazia isLocalStorePath devolver
+    // true e a entrega por regra gravava em diretório fantasma.
+    const foreignRe =
+      process.platform === 'win32' ? /^\// : /^[a-zA-Z]:[\\/]/;
+    for (const s of listLocalStores()) {
+      if (foreignRe.test(s.path) && !existsSync(s.path)) {
+        unregisterLocalStore(s.path);
+        log.info('restore', `base com caminho de outro SO removida do registro: ${s.path}`);
+      }
     }
   }
   const settings = loadSettings();

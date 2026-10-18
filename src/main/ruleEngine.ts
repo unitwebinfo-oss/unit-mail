@@ -337,6 +337,13 @@ export function defaultStorePath(): string {
   return '';
 }
 
+/** Caminho com sintaxe de OUTRO sistema operacional ("D:\…" no Linux,
+ *  "/home/…" no Windows) — nunca é destino válido, mesmo que exista um
+ *  diretório fantasma criado por engano com esse nome literal. */
+export function foreignPath(p: string): boolean {
+  return process.platform === 'win32' ? p.startsWith('/') : /^[a-zA-Z]:[\\/]/.test(p);
+}
+
 /**
  * Base de entrega de uma conta POP3: a escolhida pelo usuário ou, se nenhuma,
  * uma base local criada automaticamente (equivalente ao PST padrão do Outlook).
@@ -348,7 +355,8 @@ export function ensureDeliveryStore(account: AccountConfig): string {
   // gravar nele criava um diretório fantasma fora da base ('\' é nome
   // válido no Linux!). Sem base válida, a entrega falha com mensagem
   // clara em vez de sumir num caminho errado.
-  if (account.deliveryPath && existsSync(account.deliveryPath)) return account.deliveryPath;
+  if (account.deliveryPath && existsSync(account.deliveryPath) && !foreignPath(account.deliveryPath))
+    return account.deliveryPath;
   // Sem base vinculada à conta → usa o arquivo de dados marcado como principal
   const principal = defaultStorePath();
   if (principal) {
@@ -398,6 +406,34 @@ export class RuleEngine {
   cancelTask(taskId: string): void {
     this.cancelledTasks.add(taskId);
     if (this.currentTask?.taskId === taskId) this.currentTask.abort();
+  }
+
+  /**
+   * Esquece o estado de "já processadas" da conta — o próximo Enviar/Receber
+   * re-baixa TUDO que ainda estiver no servidor (POP3: mapa de UIDLs +
+   * Message-IDs + aliases; IMAP: último UID + pendentes). A dedupe por pasta
+   * (_dedup.json) impede duplicar o que já está na base — o re-download só
+   * grava o que de fato falta. É a recuperação para quando um bug antigo
+   * marcou mensagens como entregues sem gravar (ex.: diretório "D:\…"
+   * fantasma num backup restaurado no Linux).
+   */
+  resetSyncState(accountId: string): void {
+    const account = accountStore.getFull(accountId);
+    const emailKey = (account?.email || accountId).toLowerCase();
+    const state = loadImapState();
+    // Aliases ANTES de apagar a chave-mãe — os ids legados por accountId
+    // também guardam mapas de vistos.
+    const aliases = new Set<string>([
+      accountId,
+      ...(((state[`pop3alias:${emailKey}`] as unknown as { ids?: string[] })?.ids) || []),
+    ]);
+    for (const id of aliases) delete state[`pop3seen:${id}`];
+    delete state[`pop3seen:${emailKey}`];
+    delete state[`pop3mid:${emailKey}`];
+    delete state[`pop3alias:${emailKey}`];
+    delete state[accountId]; // IMAP: lastUid por pasta + fila de retry
+    saveImapState(state);
+    log.info('sync', `estado de sincronização da conta ${emailKey} reiniciado — próximo envio/recebimento re-baixa o servidor`);
   }
 
   private isCancelled(taskId: string): boolean {
@@ -518,8 +554,13 @@ export class RuleEngine {
         // fechada/removida deixa a regra falhar → a mensagem cai no destino
         // padrão da conta (ou fica no servidor se não houver).
         const t = (rule.targetPstPath || '').trim();
+        // existsSync + foreignPath fecham o buraco do diretório fantasma:
+        // uma base restaurada de outro SO pode deixar "D:\…" registrado em
+        // localstores.json — isLocalStorePath devolvia true e a regra gravava
+        // a mensagem num diretório literal "D:\…" fora da base.
         const targetOk =
-          t && (t.toLowerCase().endsWith('.pst') || isLocalStorePath(t));
+          t && existsSync(t) && !foreignPath(t) &&
+          (t.toLowerCase().endsWith('.pst') || isLocalStorePath(t));
         try {
           if (!targetOk) throw new Error('destino de regra inválido');
           const buf = await raw();
@@ -750,6 +791,11 @@ export class RuleEngine {
         // O progresso conta só o que é NOVO — antes o "total" era a caixa
         // inteira do servidor, e o app parecia re-baixar tudo a cada sync.
         const pendingList = list.filter((e) => !seen[e.uidl]);
+        log.info(
+          'pop3',
+          `${email}: ${list.length} mensagem(ns) no servidor — ${pendingList.length} nova(s) a baixar ` +
+            `(${Object.keys(seen).length} já marcadas como vistas)`,
+        );
         let done = 0;
         let consecFail = 0;
         let lastEmit = 0;
@@ -890,15 +936,17 @@ export class RuleEngine {
       }
     };
     const envelopes = await imap.fetchNewEnvelopes(folderId, lastUid);
+    log.info('imap', `${email}: último UID=${lastUid} — ${envelopes.length} envelope(s) novos`);
     let maxUid = lastUid;
     let done = 0;
     this.emit({ taskId: recvTask, label: `${email} - Recebendo`, accountId, phase: 'recv', status: 'processing', total: envelopes.length, done });
 
     const imapInboxDir = () => {
       // deliveryPath inválido nesta máquina (backup de outro SO) → principal
-      const dp = account?.deliveryPath && existsSync(account.deliveryPath)
-        ? account.deliveryPath
-        : '';
+      const dp =
+        account?.deliveryPath && existsSync(account.deliveryPath) && !foreignPath(account.deliveryPath)
+          ? account.deliveryPath
+          : '';
       const storePath = dp || defaultStorePath();
       return storePath
         ? folderDirFor(storePath, account?.deliveryFolder || 'Caixa de Entrada')

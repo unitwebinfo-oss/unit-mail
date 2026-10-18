@@ -52,8 +52,11 @@ jobs:
             release/*.pacman
             release/*.tar.gz
 
+  # Job Windows desativado por enquanto — o app está em fase de testes só no
+  # Linux. Para reativar, remova o "if: false".
   windows:
     name: Windows (NSIS + portable)
+    if: false
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4

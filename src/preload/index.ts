@@ -164,6 +164,8 @@ export interface OutlookApi {
   syncCancel(): Promise<boolean>;
   /** Cancela uma tarefa específica do Enviar/Receber pelo taskId. */
   syncCancelTask(taskId: string): Promise<boolean>;
+  /** Esquece o estado "já processadas" da conta — re-baixa tudo do servidor. */
+  resetSyncState(accountId: string): Promise<boolean>;
   /** Resultado do envio em segundo plano — modal fecha ao clicar em Enviar. */
   onSendResult(
     cb: (r: { ok: boolean; subject: string; error?: string }) => void,
@@ -375,6 +377,7 @@ const api: OutlookApi = {
   suggestContacts: (q) => ipcRenderer.invoke('contacts:suggest', q),
   syncCancel: () => ipcRenderer.invoke('accounts:syncCancel'),
   syncCancelTask: (taskId) => ipcRenderer.invoke('accounts:syncCancelTask', taskId),
+  resetSyncState: (accountId) => ipcRenderer.invoke('accounts:resetSync', accountId),
   getSyncInterval: () => ipcRenderer.invoke('settings:getSyncInterval'),
   setSyncInterval: (min) => ipcRenderer.invoke('settings:setSyncInterval', min),
   listRules: () => ipcRenderer.invoke('rules:list'),

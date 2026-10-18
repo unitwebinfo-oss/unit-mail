@@ -750,6 +750,25 @@ export function AccountsSettings({
     });
   };
 
+  /** "Re-sincronizar": esquece o que a conta já processou e re-baixa tudo do
+   *  servidor. Recuperação de mensagens marcadas como entregues por engano
+   *  (base restaurada de outro SO com caminhos inválidos, por exemplo). */
+  const resetSync = (id: string) => {
+    const acc = accounts.find((a) => a.id === id);
+    setConfirm({
+      title: 'Re-sincronizar do servidor',
+      message:
+        `Re-baixar todas as mensagens de "${acc?.email || id}" que ainda estiverem no servidor? ` +
+        'O que já está na base não duplica, mas a sincronização pode demorar se a caixa for grande.',
+      onOk: () => {
+        setConfirm(null);
+        void window.outlook.resetSyncState(id).then(() => {
+          setTestMsg('Sincronização reiniciada — use Enviar/Receber para baixar novamente.');
+        });
+      },
+    });
+  };
+
   const deleteStore = (s: MailSource) => {
     setConfirm({
       title: 'Excluir base de dados',
@@ -1244,6 +1263,13 @@ export function AccountsSettings({
                     </div>
                     <div className="acct-cell acct-actions" role="cell">
                       <button onClick={() => startEdit(a)} className="btn">Editar</button>
+                      <button
+                        onClick={() => resetSync(a.id)}
+                        className="btn"
+                        title="Esquece o que já foi baixado e re-sincroniza tudo do servidor"
+                      >
+                        Re-sincronizar
+                      </button>
                       <button onClick={() => remove(a.id)} className="btn btn-ghost danger">Remover</button>
                     </div>
                   </div>
