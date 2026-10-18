@@ -764,20 +764,9 @@ export class RuleEngine {
           return !!(c.fromContains?.trim() || c.toContains?.trim() || c.subjectContains?.trim());
         });
       // Se o servidor derrubar a sessão no meio do ciclo (rate-limit/timeout),
-      // reabre e continua a partir da mensagem atual — o UIDL novo resolve os
-      // números, que podem mudar se nossas DELE já foram commitadas.
-      let reconnects = 0;
+      // o worker reabre a PRÓPRIA sessão e remapeia os números via UIDL —
+      // DELEs commitados por outra sessão podem mudar a numeração.
       let numByUidl = new Map<string, number>();
-      const reopen = async () => {
-        try {
-          await session.end();
-        } catch {
-          // sessão já morta
-        }
-        session = await pop3.openSyncSession();
-        numByUidl = new Map((await session.uidl()).map((e) => [e.uidl, e.num]));
-        reconnects++;
-      };
       try {
         const list = await session.uidl();
         for (const e of list) numByUidl.set(e.uidl, e.num);
@@ -797,81 +786,31 @@ export class RuleEngine {
             `(${Object.keys(seen).length} já marcadas como vistas)`,
         );
         let done = 0;
-        let consecFail = 0;
         let lastEmit = 0;
         this.emit({ taskId: recvTask, label: `${email} - Recebendo`, accountId, phase: 'recv', status: 'processing', total: pendingList.length, done });
-        for (const { uidl } of pendingList) {
-          if (this.isCancelled(recvTask)) break;
-          const num = numByUidl.get(uidl);
-          if (!num) { done++; continue; }
-          let failed = false;
-          let delivered = false;
-          let env = { uid: num, from: '', to: '', subject: '', messageId: '' };
-          try {
-            // TOP é opcional no POP3 — se o servidor recusar numa mensagem,
-            // baixa mesmo assim: regras só não casam e cai no destino padrão
-            if (needEnvelope) {
-              try {
-                env = await session.envelope(num);
-              } catch {
-                // segue sem envelope
-              }
+        // Pool de sessões paralelas: POP3 é estritamente sequencial por
+        // conexão (comando → resposta), então numa caixa grande o tempo é
+        // dominado pelo roundtrip de cada RETR, não pela banda. Várias
+        // sessões dividem a fila e cortam o tempo proporcionalmente.
+        // Cada worker tem sessão e mapa num↔uidl próprios — DELEs
+        // commitados numa sessão podem mudar a numeração das outras.
+        const liveSessions = new Set<{ abort(): void }>([session]);
+        abortInFlight = () => {
+          for (const s of liveSessions) {
+            try {
+              s.abort();
+            } catch {
+              // já morta
             }
-            // UIDL desconhecido mas Message-ID já entregue (servidor gera
-            // UIDL novo por sessão, ou o mapa "vistos" se perdeu): conta como
-            // vista sem baixar o corpo — é o que impede a re-descarga total.
-            if (env.messageId && seenMids.has(env.messageId.toLowerCase())) {
-              seen[uidl] = Date.now();
-              if (++sinceFlush >= 100) { flushState(); sinceFlush = 0; }
-              done++;
-              continue;
-            }
-            result.scanned++;
-            delivered = await deliverMessage(
-              () => session.retr(num),
-              env,
-              num,
-              popInboxDir,
-              true, // POP3: destino obrigatório — falha = tenta de novo no próximo sync
-            );
-            // Só marca como vista e só remove do servidor quando a mensagem
-            // foi REALMENTE gravada — senão ela se perderia para sempre.
-            if (delivered) {
-              seen[uidl] = Date.now();
-              if (env.messageId) seenMids.add(env.messageId.toLowerCase());
-              if (++sinceFlush >= 100) { flushState(); sinceFlush = 0; }
-              // "Deixar uma cópia no servidor" desmarcado → DELE após baixar
-              if (account.leaveOnServer === false) {
-                await session.dele(num).catch(() => {});
-              }
-            } else {
-              undelivered++;
-              failed = true;
-            }
-          } catch (e) {
-            log.error(`POP3 mensagem ${num}`, e);
-            // mensagem ilegível — pula (não marca: tenta de novo no próximo sync)
-            failed = true;
           }
-          if (failed) {
-            consecFail++;
-            // Várias falhas seguidas = a sessão provavelmente caiu → reabre
-            // e continua o loop (em vez de desistir do resto da caixa)
-            if (consecFail >= 3 && reconnects < 3) {
-              try {
-                await reopen();
-                consecFail = 0;
-              } catch {
-                break; // não reconectou — próxima sync continua de onde parou
-              }
-            }
-          } else {
-            consecFail = 0;
-          }
-          done++;
-          // Progresso com throttle (~150 ms): emitir um evento por mensagem
-          // mandava milhares de IPCs ao renderer, que re-renderizava o app
-          // inteiro a cada uma — era a principal fonte da lentidão no sync.
+        };
+        const emitProgress = (
+          uidl: string,
+          env: { from: string; subject: string },
+          delivered: boolean,
+        ) => {
+          // Progresso com throttle (~150 ms): um evento por mensagem mandava
+          // milhares de IPCs ao renderer — principal fonte da lentidão antiga.
           const now = Date.now();
           if (now - lastEmit >= 150 || done === pendingList.length) {
             lastEmit = now;
@@ -881,7 +820,128 @@ export class RuleEngine {
               item: { key: uidl, subject: env.subject, from: env.from, status: delivered ? 'ok' : 'fail', time: new Date().toISOString() },
             });
           }
-        }
+        };
+        // Fila compartilhada — cursor atômico (JS é single-threaded, basta ++).
+        let cursor = 0;
+        // Até 4 sessões extras além da principal. Servidor que recusa login
+        // concorrente faz o worker extra sair na conexão — os demais cobrem.
+        const workerCount = Math.min(5, pendingList.length || 1);
+        const worker = async (primary: boolean) => {
+          let sess: typeof session | null = null;
+          if (primary) {
+            sess = session;
+          } else {
+            try {
+              sess = await pop3.openSyncSession();
+              liveSessions.add(sess);
+            } catch {
+              // servidor recusou a conexão extra — segue com menos paralelismo
+              return;
+            }
+          }
+          let myNums = primary
+            ? numByUidl
+            : new Map((await sess.uidl()).map((e) => [e.uidl, e.num]));
+          let consecFail = 0;
+          let myReconnects = 0;
+          try {
+            for (;;) {
+              if (this.isCancelled(recvTask)) return;
+              const item = pendingList[cursor++];
+              if (!item) return;
+              const { uidl } = item;
+              const num = myNums.get(uidl);
+              if (!num) { done++; emitProgress(uidl, env0, true); continue; }
+              let failed = false;
+              let delivered = false;
+              let env = { uid: num, from: '', to: '', subject: '', messageId: '' };
+              try {
+                // TOP é opcional no POP3 — se o servidor recusar numa mensagem,
+                // baixa mesmo assim: regras só não casam e cai no destino padrão
+                if (needEnvelope) {
+                  try {
+                    env = await sess.envelope(num);
+                  } catch {
+                    // segue sem envelope
+                  }
+                }
+                // UIDL desconhecido mas Message-ID já entregue (servidor gera
+                // UIDL novo por sessão, ou o mapa "vistos" se perdeu): conta
+                // como vista sem baixar o corpo — impede a re-descarga total.
+                if (env.messageId && seenMids.has(env.messageId.toLowerCase())) {
+                  seen[uidl] = Date.now();
+                  if (++sinceFlush >= 100) { flushState(); sinceFlush = 0; }
+                  done++;
+                  emitProgress(uidl, env, true);
+                  continue;
+                }
+                result.scanned++;
+                delivered = await deliverMessage(
+                  () => sess!.retr(num),
+                  env,
+                  num,
+                  popInboxDir,
+                  true, // POP3: destino obrigatório — falha = tenta de novo no próximo sync
+                );
+                // Só marca como vista e só remove do servidor quando a
+                // mensagem foi REALMENTE gravada — senão se perde pra sempre.
+                if (delivered) {
+                  seen[uidl] = Date.now();
+                  if (env.messageId) seenMids.add(env.messageId.toLowerCase());
+                  if (++sinceFlush >= 100) { flushState(); sinceFlush = 0; }
+                  // "Deixar uma cópia no servidor" desmarcado → DELE após baixar
+                  if (account.leaveOnServer === false) {
+                    await sess.dele(num).catch(() => {});
+                  }
+                } else {
+                  undelivered++;
+                  failed = true;
+                }
+              } catch (e) {
+                log.error(`POP3 mensagem ${num}`, e);
+                // mensagem ilegível — pula (não marca: tenta de novo no próximo sync)
+                failed = true;
+              }
+              if (failed) {
+                consecFail++;
+                // Várias falhas seguidas = a sessão provavelmente caiu →
+                // reabre a PRÓPRIA sessão (e remapeia números) e continua
+                if (consecFail >= 3 && myReconnects < 3 && !this.isCancelled(recvTask)) {
+                  try {
+                    liveSessions.delete(sess);
+                    try {
+                      await sess.end();
+                    } catch {
+                      // sessão já morta
+                    }
+                    sess = await pop3.openSyncSession();
+                    liveSessions.add(sess);
+                    myNums = new Map((await sess.uidl()).map((e) => [e.uidl, e.num]));
+                    myReconnects++;
+                    consecFail = 0;
+                  } catch {
+                    return; // não reconectou — os outros workers cobrem a fila
+                  }
+                }
+              } else {
+                consecFail = 0;
+              }
+              done++;
+              emitProgress(uidl, env, delivered);
+            }
+          } finally {
+            // Sessão extra fecha aqui; a primária fecha no finally externo
+            // (ainda é usada pela limpeza "remover após N dias" abaixo).
+            if (!primary && sess) {
+              liveSessions.delete(sess);
+              await sess.end().catch(() => {});
+            }
+          }
+        };
+        const env0 = { from: '', subject: '' };
+        const workers = [worker(true)];
+        for (let i = 1; i < workerCount; i++) workers.push(worker(false));
+        await Promise.all(workers);
         // "Remover do servidor após N dias"
         if (account.leaveOnServer !== false && (account.leaveDays ?? 0) > 0) {
           const cutoff = Date.now() - (account.leaveDays || 0) * 86400000;
