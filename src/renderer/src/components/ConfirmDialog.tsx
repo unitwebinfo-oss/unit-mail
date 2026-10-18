@@ -6,6 +6,8 @@ interface ConfirmDialogProps {
   message: string;
   /** Rótulo do botão de confirmação (padrão "Excluir"). */
   confirmLabel?: string;
+  /** false = ação não destrutiva (botão azul em vez de vermelho). */
+  danger?: boolean;
   onConfirm: () => void;
   onCancel: () => void;
 }
@@ -15,6 +17,7 @@ export function ConfirmDialog({
   title,
   message,
   confirmLabel = 'Excluir',
+  danger = true,
   onConfirm,
   onCancel,
 }: ConfirmDialogProps) {
@@ -39,7 +42,7 @@ export function ConfirmDialog({
           <button className="ghost-btn" onClick={onCancel} autoFocus>
             Cancelar
           </button>
-          <button className="danger-btn" onClick={onConfirm}>
+          <button className={danger ? 'danger-btn' : 'btn btn-primary'} onClick={onConfirm}>
             {confirmLabel}
           </button>
         </div>

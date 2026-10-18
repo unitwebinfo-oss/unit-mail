@@ -216,6 +216,8 @@ export function AccountsSettings({
   const [confirm, setConfirm] = useState<{
     title: string;
     message: string;
+    confirmLabel?: string;
+    danger?: boolean;
     onOk: () => void;
   } | null>(null);
 
@@ -760,6 +762,8 @@ export function AccountsSettings({
       message:
         `Re-baixar todas as mensagens de "${acc?.email || id}" que ainda estiverem no servidor? ` +
         'O que já está na base não duplica, mas a sincronização pode demorar se a caixa for grande.',
+      confirmLabel: 'Re-sincronizar',
+      danger: false,
       onOk: () => {
         setConfirm(null);
         void window.outlook.resetSyncState(id).then(() => {
@@ -1132,6 +1136,8 @@ export function AccountsSettings({
                   message: res.isProfile
                     ? `"${res.dir}" já contém um perfil do Unit Mail — contas, regras e bases serão restaurados de lá. Confirmar?`
                     : `Mover seus dados para "${res.dir}"? As bases locais serão copiadas para a subpasta Mail/ e as referências atualizadas.`,
+                  confirmLabel: 'Mover',
+                  danger: false,
                   onOk: () => {
                     setConfirm(null);
                     void window.outlook.applyDataDir?.(res.dir).then((applied) => {
@@ -1145,6 +1151,8 @@ export function AccountsSettings({
                       setConfirm({
                         title: 'Pasta de dados alterada',
                         message: 'Dados copiados. Reinicie o app para concluir.',
+                        confirmLabel: 'Reiniciar',
+                        danger: false,
                         onOk: () => void window.outlook.restartApp?.(),
                       });
                     });
@@ -2509,6 +2517,8 @@ export function AccountsSettings({
         <ConfirmDialog
           title={confirm.title}
           message={confirm.message}
+          confirmLabel={confirm.confirmLabel}
+          danger={confirm.danger}
           onConfirm={confirm.onOk}
           onCancel={() => setConfirm(null)}
         />
