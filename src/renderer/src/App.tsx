@@ -1962,7 +1962,7 @@ export default function App() {
   }
 
   return (
-    <div className="app">
+    <div className={`app${winChrome ? ' with-titlebar' : ''}`}>
       {winChrome && (
         <div className="win-titlebar">
           <Icon name="envelope" size={16} />

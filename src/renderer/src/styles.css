@@ -2427,13 +2427,18 @@ body {
 /* ===== Backstage (aba Arquivo) ===== */
 .backstage {
   position: fixed;
-  top: 32px;
+  /* Cobre a janela toda abaixo da barra de título (quando existe) —
+     era 32px fixo e subia 4px por cima da faixa azul de 36px. */
+  top: 0;
   left: 0;
   right: 0;
   bottom: 0;
   z-index: 80;
   display: flex;
   background: #fafafa;
+}
+.app.with-titlebar .backstage {
+  top: 36px; /* altura da .win-titlebar */
 }
 .bs-side {
   width: 210px;
