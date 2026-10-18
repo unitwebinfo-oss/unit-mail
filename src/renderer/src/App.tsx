@@ -458,7 +458,9 @@ export default function App() {
     refreshImagePref();
     window.outlook.getCategories?.().then(setCategories).catch(() => {});
     // No Windows o app desenha a faixa de título azul (botões do SO por cima)
-    window.outlook.getAppInfo?.().then((i) => setWinChrome(i.platform === 'win32'));
+    // Barra azul integrada onde o titleBarOverlay existe (Windows e Linux);
+    // no macOS a moldura nativa continua.
+    window.outlook.getAppInfo?.().then((i) => setWinChrome(i.platform !== 'darwin'));
     // Tema: aplica o salvo e reage quando o SO alterna claro/escuro
     window.outlook.getTheme?.().then((t) => applyTheme(t));
     const mq = window.matchMedia('(prefers-color-scheme: dark)');
@@ -2035,7 +2037,7 @@ export default function App() {
             <button className="open-btn" onClick={() => openSettings('data')}>
               Arquivos de dados…
             </button>
-            <button className="open-btn" style={{ background: '#fff', color: 'var(--blue)', border: '1px solid var(--blue)' }} onClick={() => openSettings('email')}>
+            <button className="open-btn" style={{ background: 'var(--surface)', color: 'var(--blue)', border: '1px solid var(--blue)' }} onClick={() => openSettings('email')}>
               Configurar contas…
             </button>
           </div>

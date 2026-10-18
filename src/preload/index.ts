@@ -93,6 +93,9 @@ export interface OutlookApi {
   pickDataDirPath(): Promise<{ dir: string; isProfile: boolean } | null>;
   /** Aplica a pasta de dados escolhida (grava ponteiro, migra dados se nova). */
   applyDataDir(dir: string): Promise<{ dir: string; adopted: boolean } | null>;
+  /** Garante um arquivo de dados quando o wizard termina sem nenhum (cria
+   *  "Unit Mail Data" como principal). Retorna null se já existe base. */
+  ensureDefaultStore(): Promise<MailSource | null>;
   /** Reinicia o app (marca setup como concluído — usado ao adotar um perfil). */
   restartApp(): Promise<void>;
   /** Caminho do arquivo de dados principal ('' = nenhum). */
@@ -396,6 +399,7 @@ const api: OutlookApi = {
   getDataDir: () => ipcRenderer.invoke('app:getDataDir'),
   pickDataDirPath: () => ipcRenderer.invoke('app:pickDataDirPath'),
   applyDataDir: (dir) => ipcRenderer.invoke('app:applyDataDir', dir),
+  ensureDefaultStore: () => ipcRenderer.invoke('app:ensureDefaultStore'),
   restartApp: () => ipcRenderer.invoke('app:restart'),
 
   getFolderTree: (sourceId) => ipcRenderer.invoke('mail:folderTree', sourceId),

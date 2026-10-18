@@ -314,6 +314,9 @@ export function OnboardingWizard({ onChanged, onDone }: OnboardingWizardProps) {
       // ignora
     }
     void window.outlook.setSetupComplete(true);
+    // Quem pulou a configuração de conta ficaria sem nenhum arquivo de dados
+    // — cria "Unit Mail Data" como principal, como o Outlook faz no 1º uso.
+    void window.outlook.ensureDefaultStore?.().then(() => onChanged());
     onDone();
   };
 

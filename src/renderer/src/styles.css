@@ -1101,7 +1101,7 @@ body {
   align-items: center;
   justify-content: center;
   gap: 18px;
-  background: #fff;
+  background: var(--surface);
 }
 .welcome .logo {
   width: 96px;
@@ -2936,6 +2936,9 @@ body.dark .ctx-input input {
 }
 body.dark .modal-overlay {
   background: rgba(0, 0, 0, 0.6);
+}
+body.dark .loading-overlay {
+  background: rgba(0, 0, 0, 0.55);
 }
 /* Badges e chips das abas de Contas/Regras — tons pastel claros ficavam
    "brancos" sobre o fundo escuro; versões escuras equivalentes. */

@@ -403,11 +403,12 @@ function splashStatus(msg: string): void {
 
 function createWindow(): BrowserWindow {
   const iconPath = appIcon();
-  // No Windows, barra de título integrada: os botões min/max/close do sistema
-  // ficam sobre uma faixa azul renderizada pelo app (estilo Office moderno).
-  // No Linux/macOS mantemos a moldura nativa do sistema.
+  // Barra de título integrada: os botões min/max/close do sistema ficam
+  // sobre uma faixa azul renderizada pelo app (estilo Office moderno).
+  // titleBarOverlay é suportado no Windows e no Linux; sem ele o Linux
+  // mostrava a moldura nativa (barra preta do GNOME/KDE) em vez do azul.
   const winChrome =
-    process.platform === 'win32'
+    process.platform === 'win32' || process.platform === 'linux'
       ? {
           titleBarStyle: 'hidden' as const,
           titleBarOverlay: { color: '#0173c7', symbolColor: '#ffffff', height: 36 },
@@ -541,6 +542,22 @@ function registerIpc(): void {
     saveSettings(s);
     app.relaunch();
     app.exit(0);
+  });
+
+  // Chamado quando o wizard termina: se nenhum arquivo de dados existe
+  // (usuário pulou a configuração de conta), cria a base padrão "Unit Mail
+  // Data" — como o Outlook, que cria um "Arquivo de Dados do Outlook" no
+  // primeiro uso. Sem base, Calendário/Pessoas/Tarefas ficam sem destino.
+  ipcMain.handle('app:ensureDefaultStore', () => {
+    const s = loadSettings();
+    const hasAny =
+      s.openLocalStores.some((p) => existsSync(p)) ||
+      s.openPstFiles.some((p) => existsSync(p));
+    if (hasAny) return null;
+    const def = createLocalStore('Unit Mail Data', mailRoot());
+    addOpenLocalStore(def.path);
+    adoptFirstAsDefault(def.path);
+    return sourceManager.openLocalStore(def.path, def.name);
   });
 
   ipcMain.handle('dialog:openPst', async () => {
