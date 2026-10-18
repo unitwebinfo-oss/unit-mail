@@ -43,6 +43,9 @@ interface Settings {
   defaultStorePath?: string;
   /** Tema da interface: 'system' segue o SO. */
   theme?: 'system' | 'light' | 'dark';
+  /** Re-sincronização total única já executada (correção do estado "visto"
+   *  envenenado por versões que entregavam em diretório fantasma). */
+  fullResyncDone?: boolean;
 }
 
 function settingsPath(): string {
@@ -1686,6 +1689,30 @@ async function restoreSession(): Promise<void> {
     // TODAS as referências persistidas a arquivos/bases — não só a lista de
     // abertos: a entrega de conta e a base principal também guardam caminhos
     // e eram as que quebravam o Enviar/Receber num backup restaurado.
+    const foreignRe =
+      process.platform === 'win32' ? /^\// : /^[a-zA-Z]:[\\/]/;
+    // Contas cuja entrega apontava para caminho de outro SO tiveram o estado
+    // de "já vistas" possivelmente envenenado: versões anteriores "entregavam"
+    // num diretório fantasma ("D:\…" é nome válido no Linux) e marcavam a
+    // mensagem como processada — ela nunca chegou na base e nunca seria
+    // baixada de novo. Reseta o estado → o próximo Enviar/Receber re-baixa
+    // TUDO que ainda estiver no servidor e a base converge com o outro PC
+    // (a dedupe por pasta impede duplicar o que já está nela).
+    const foreignTargets = new Set(
+      ruleEngine
+        .list()
+        .filter((r) => r.targetPstPath && foreignRe.test(r.targetPstPath))
+        .map((r) => r.accountId),
+    );
+    const poisonedAccounts = accountStore
+      .list()
+      .filter(
+        (a) =>
+          (a.deliveryPath && foreignRe.test(a.deliveryPath)) ||
+          foreignTargets.has(a.id) ||
+          foreignTargets.has('all'),
+      )
+      .map((a) => a.id);
     const candidates = new Set<string>([
       ...s0.openPstFiles,
       ...s0.openLocalStores,
@@ -1704,13 +1731,37 @@ async function restoreSession(): Promise<void> {
     // ("D:\…" no Linux, "/home/…" no Windows): nunca podem ser um destino
     // válido — manter no localstores.json fazia isLocalStorePath devolver
     // true e a entrega por regra gravava em diretório fantasma.
-    const foreignRe =
-      process.platform === 'win32' ? /^\// : /^[a-zA-Z]:[\\/]/;
     for (const s of listLocalStores()) {
       if (foreignRe.test(s.path) && !existsSync(s.path)) {
         unregisterLocalStore(s.path);
         log.info('restore', `base com caminho de outro SO removida do registro: ${s.path}`);
       }
+    }
+    for (const id of poisonedAccounts) {
+      ruleEngine.resetSyncState(id);
+      log.info(
+        'restore',
+        `estado de sincronização da conta ${id} reiniciado — entrega apontava para caminho de outro SO`,
+      );
+    }
+  }
+  // Re-sincronização total UMA vez por instalação: quem restaurou base com a
+  // versão que entregava em diretório fantasma tem o mapa de "já vistas"
+  // envenenado — os caminhos já foram corrigidos, então a detecção por
+  // caminho estrangeiro acima não pega mais. Zera o estado de TODAS as
+  // contas uma única vez: o próximo Enviar/Receber re-baixa tudo do
+  // servidor e a base converge com a do outro PC (a dedupe por pasta
+  // impede duplicar o que já está gravado).
+  {
+    const sFlag = loadSettings();
+    if (!sFlag.fullResyncDone && accountStore.list().length > 0) {
+      for (const acc of accountStore.list()) ruleEngine.resetSyncState(acc.id);
+      sFlag.fullResyncDone = true;
+      saveSettings(sFlag);
+      log.info(
+        'restore',
+        're-sincronização total agendada — próximo Enviar/Receber re-baixa todas as mensagens do servidor',
+      );
     }
   }
   const settings = loadSettings();
