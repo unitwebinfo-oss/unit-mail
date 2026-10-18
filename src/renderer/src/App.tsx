@@ -1608,8 +1608,25 @@ export default function App() {
       const id = detailRef.sourceId.slice('acct:'.length);
       if (accounts.some((a) => a.id === id)) return id;
     }
+    // Mensagem numa base local/PST (onde o POP3 entrega): a conta que envia
+    // a resposta é a da mensagem original, como no Outlook — se a mensagem
+    // foi ENVIADA por uma conta nossa (itens enviados), responde por ela;
+    // senão, a conta cujo e-mail aparece no Para/Cc (a que recebeu).
+    // Sem isso a resposta sempre saía da primeira conta da lista.
+    if (detail) {
+      const sender = (detail.senderEmailAddress || '').toLowerCase();
+      const bySender = accounts.find(
+        (a) => a.email && sender.includes(a.email.toLowerCase()),
+      );
+      if (bySender) return bySender.id;
+      const targets = `${detail.displayTo || ''} ${detail.displayCC || ''}`.toLowerCase();
+      const match = accounts.find(
+        (a) => a.email && targets.includes(a.email.toLowerCase()),
+      );
+      if (match) return match.id;
+    }
     return accounts[0]?.id || '';
-  }, [detailRef, accounts]);
+  }, [detailRef, detail, accounts]);
 
   /** Responde convite de reunião (Aceitar / Recusar / Propor novo horário). */
   const respondInvite = useCallback(
