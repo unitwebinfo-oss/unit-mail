@@ -343,7 +343,12 @@ export function defaultStorePath(): string {
  * Retorna o diretório físico onde gravar a pasta.
  */
 export function ensureDeliveryStore(account: AccountConfig): string {
-  if (account.deliveryPath) return account.deliveryPath;
+  // deliveryPath só vale se a pasta existe NESTA máquina — um backup
+  // restaurado de outro SO traz caminho inválido ("D:\…" no Linux), e
+  // gravar nele criava um diretório fantasma fora da base ('\' é nome
+  // válido no Linux!). Sem base válida, a entrega falha com mensagem
+  // clara em vez de sumir num caminho errado.
+  if (account.deliveryPath && existsSync(account.deliveryPath)) return account.deliveryPath;
   // Sem base vinculada à conta → usa o arquivo de dados marcado como principal
   const principal = defaultStorePath();
   if (principal) {
@@ -890,7 +895,11 @@ export class RuleEngine {
     this.emit({ taskId: recvTask, label: `${email} - Recebendo`, accountId, phase: 'recv', status: 'processing', total: envelopes.length, done });
 
     const imapInboxDir = () => {
-      const storePath = account?.deliveryPath || defaultStorePath();
+      // deliveryPath inválido nesta máquina (backup de outro SO) → principal
+      const dp = account?.deliveryPath && existsSync(account.deliveryPath)
+        ? account.deliveryPath
+        : '';
+      const storePath = dp || defaultStorePath();
       return storePath
         ? folderDirFor(storePath, account?.deliveryFolder || 'Caixa de Entrada')
         : null;
@@ -926,6 +935,10 @@ export class RuleEngine {
         env,
         env.uid,
         imapInboxDir,
+        // Conta vinculada a uma base → a entrega é obrigatória: sem destino
+        // válido a mensagem fica pendurada para a próxima sync em vez de
+        // sumir marcada como processada.
+        !!account?.deliveryPath,
       );
       if (!ok) stillPending.push({ uid: env.uid, from: env.from, to: env.to, subject: env.subject });
       done++;

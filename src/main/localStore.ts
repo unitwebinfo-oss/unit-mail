@@ -117,6 +117,20 @@ export function unregisterLocalStore(path: string): void {
   saveRegistry(listLocalStores().filter((s) => s.path.toLowerCase() !== path.toLowerCase()));
 }
 
+/** Atualiza o caminho registrado de uma base — usado quando um backup é
+ *  restaurado noutra máquina/SO e o caminho antigo (ex.: "D:\…") muda. */
+export function remapLocalStorePath(oldPath: string, newPath: string): void {
+  const stores = listLocalStores();
+  const def = stores.find(
+    (s) => s.path.toLowerCase() === oldPath.toLowerCase() ||
+      s.path.split(/[\\/]+/).join('/').toLowerCase() ===
+        oldPath.split(/[\\/]+/).join('/').toLowerCase(),
+  );
+  if (!def) return;
+  def.path = newPath;
+  saveRegistry(stores);
+}
+
 /** Renomeia a base local (atualiza store.json + registro). */
 export function renameLocalStore(path: string, newName: string): LocalStoreDef | null {
   const stores = listLocalStores();

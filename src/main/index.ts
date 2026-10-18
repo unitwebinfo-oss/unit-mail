@@ -11,7 +11,7 @@ import { avStatus } from './antivirus';
 import { recordRecipients, searchContacts } from './contactHistory';
 import { ruleEngine, ensureDeliveryStore, folderDirFor } from './ruleEngine';
 import { signatureStore } from './signatureStore';
-import { createLocalStore, deleteLocalStore, isLocalStorePath, listLocalStores, registerLocalStore, renameLocalStore, unregisterLocalStore } from './localStore';
+import { createLocalStore, deleteLocalStore, isLocalStorePath, listLocalStores, registerLocalStore, remapLocalStorePath, renameLocalStore, unregisterLocalStore } from './localStore';
 import { dataDir, mailRoot, setDataDir, isUnitMailProfile, scanMailDir } from './dataDir';
 import { log } from './logger';
 import { migratePstToLocalStore } from './pstImport';
@@ -161,6 +161,10 @@ function remapPstReferences(oldPath: string, newPath: string): void {
     }
   }
   saveSettings(s);
+
+  // Registro de bases locais — sem isso o localstores.json continuava com o
+  // caminho antigo (ex.: "D:\…") e a UI mostrava a base "quebrada".
+  remapLocalStorePath(oldPath, newPath);
 
   // Entrega das contas apontando para o caminho antigo
   for (const acc of accountStore.list()) {
@@ -1665,12 +1669,27 @@ async function restoreSession(): Promise<void> {
   // atualiza TODAS as referências (entrega de conta, regras, base principal…).
   {
     const s0 = loadSettings();
+    // basename cross-platform: no Linux, '\' é caractere comum e
+    // path.basename('D:\x\y') devolve a string INTEIRA — caminhos vindos de
+    // um backup Windows nunca casavam e o remap não acontecia (as referências
+    // continuavam "D:\..." e a entrega falhava silenciosamente).
+    const anyBase = (p: string) => p.split(/[\\/]/).filter(Boolean).pop() || p;
     const seen = new Set<string>();
-    for (const oldPath of [...s0.openPstFiles, ...s0.openLocalStores]) {
+    // TODAS as referências persistidas a arquivos/bases — não só a lista de
+    // abertos: a entrega de conta e a base principal também guardam caminhos
+    // e eram as que quebravam o Enviar/Receber num backup restaurado.
+    const candidates = new Set<string>([
+      ...s0.openPstFiles,
+      ...s0.openLocalStores,
+      ...(s0.defaultStorePath ? [s0.defaultStorePath] : []),
+      ...accountStore.list().map((a) => a.deliveryPath || '').filter(Boolean),
+      ...ruleEngine.list().map((r) => r.targetPstPath || '').filter(Boolean),
+    ]);
+    for (const oldPath of candidates) {
       const key = resolve(oldPath).toLowerCase();
       if (seen.has(key) || existsSync(oldPath)) continue;
       seen.add(key);
-      const alt = join(mailRoot(), basename(oldPath));
+      const alt = join(mailRoot(), anyBase(oldPath));
       if (existsSync(alt)) remapPstReferences(oldPath, alt);
     }
   }
