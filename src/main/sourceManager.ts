@@ -266,6 +266,22 @@ export class SourceManager {
     return svc.getFolderTree();
   }
 
+  /** Edita compromisso/contato/tarefa — regrava o .eml e retorna árvore + item
+   *  efetivo (com uid/seq do compromisso, para reenviar o convite). */
+  async updateSpecialItem(
+    sourceId: string,
+    folderId: string,
+    index: number,
+    item: NewSpecialItem,
+  ): Promise<{ tree: FolderNode[]; item: NewSpecialItem }> {
+    const svc = this.backend(sourceId);
+    if (!(svc instanceof PstService)) {
+      throw new Error('Editar itens só é suportado em arquivos de dados');
+    }
+    const merged = await svc.updateSpecialItem(folderId, index, item);
+    return { tree: svc.getFolderTree(), item: merged };
+  }
+
   /** Cria uma pasta gravável na base (raiz ou dentro de outra pasta). */
   createFolder(sourceId: string, name: string, parentFolderId: string | null): FolderNode[] {
     const svc = this.backend(sourceId);

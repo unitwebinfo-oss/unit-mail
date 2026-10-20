@@ -212,8 +212,9 @@ function Row({
       title={`${m.senderName || m.senderEmailAddress} — ${m.subject}`}
     >
       <span className="ml-icons">
-        {m.hasAttachments && <Icon name="clip" size={12} />}
-        {m.importance === 2 && <Icon name="flag" size={12} />}
+        {m.inviteMethod && <Icon name="meeting" size={15} color="#0f6cbd" />}
+        {m.hasAttachments && <Icon name="clip" size={15} color="#ca5010" />}
+        {m.importance === 2 && <Icon name="flag" size={15} color="#d13438" />}
         {(m.categories ?? []).map((id) => {
           const c = catById?.get(id);
           return c ? (

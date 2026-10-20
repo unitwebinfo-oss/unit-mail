@@ -12,6 +12,7 @@ import { NewItemDialog } from './components/NewItemDialog';
 import { SyncProgressDialog } from './components/SyncProgressDialog';
 import { ConfirmDialog } from './components/ConfirmDialog';
 import { CategoriesDialog } from './components/CategoriesDialog';
+import { ReminderDialog, type ReminderEvent } from './components/ReminderDialog';
 import { CalendarModule } from './modules/CalendarModule';
 import { ContactsModule } from './modules/ContactsModule';
 import { TasksModule } from './modules/TasksModule';
@@ -158,6 +159,14 @@ export default function App() {
 
   /** Diálogo "Novos Itens" — compromisso, contato ou tarefa. */
   const [newItemKind, setNewItemKind] = useState<'appt' | 'contact' | 'task' | null>(null);
+  /** Item especial em edição (compromisso/contato/tarefa criado nesta base). */
+  const [reminders, setReminders] = useState<ReminderEvent[]>([]);
+  const [editingItem, setEditingItem] = useState<{
+    sourceId: string;
+    folderId: string;
+    index: number;
+    item: NewSpecialItem;
+  } | null>(null);
   /** Base onde itens especiais são criados — sempre a principal (arquivo de dados padrão). */
   const [apptSourceId, setApptSourceId] = useState('');
   /** Caminho do arquivo de dados principal — cacheado para decisões síncronas. */
@@ -570,12 +579,12 @@ export default function App() {
     const unsubSearchBatch = window.outlook.onSearchBatch?.((sourceId, hits) =>
       pushSearchHits(sourceId, hits),
     );
-    // Lembrete de compromisso disparado pelo main → toast dentro do app
+    // Lembrete de compromisso → janela de lembretes estilo Outlook + som
     const unsubCal = window.outlook.onCalendarReminder?.((ev) => {
       playReminderSound();
-      const quando = ev.startTime ? new Date(ev.startTime).toLocaleString(locale()) : '';
-      setNotice(t('Lembrete: {subj}{quando}{local}', { subj: ev.subject, quando: quando ? ` — ${quando}` : '', local: ev.location ? ` (${ev.location})` : '' }));
-      setTimeout(() => setNotice(''), 20000);
+      setReminders((prev) =>
+        prev.some((r) => r.key === ev.key) ? prev : [...prev, ev],
+      );
     });
     // Envio concluído numa janela de composição separada → recarrega listas
     const unsubSent2 = window.outlook.onComposeSent?.(() => void refreshOpenFolder());
@@ -633,16 +642,21 @@ export default function App() {
     setFolderTrees((t) => (t[sid] ? { ...t, [sid]: patchUnread(t[sid], fid, -1) } : t));
   }, []);
 
+  /** Sequência de seleção — uma leitura lenta (PST) não pode sobrescrever
+   *  uma seleção mais nova que já resolveu. */
+  const selSeq = useRef(0);
+
   const selectItem = useCallback(
     async (item: ItemSummary, sourceId?: string, folderId?: string) => {
       const sid = sourceId ?? selected?.sourceId;
       const fid = folderId ?? selected?.folder.id;
       if (sid === undefined || fid === undefined) return;
+      const seq = ++selSeq.current;
       setDetailRef({ sourceId: sid, folderId: fid });
       const key = detailKey(sid, fid, item.index);
       const cached = detailCache.current.get(key);
       if (cached) {
-        setDetail(cached);
+        if (seq === selSeq.current) setDetail(cached);
       } else {
         // Spinner SÓ no painel de leitura — o overlay de tela inteira comia o
         // segundo clique do duplo clique e piscava a cada seleção.
@@ -654,11 +668,12 @@ export default function App() {
             const oldest = detailCache.current.keys().next().value;
             if (oldest !== undefined) detailCache.current.delete(oldest);
           }
-          setDetail(d);
+          if (seq === selSeq.current) setDetail(d);
         } catch (e) {
-          setError(t('Erro ao ler item: {msg}', { msg: (e as Error).message }));
+          if (seq === selSeq.current)
+            setError(t('Erro ao ler item: {msg}', { msg: (e as Error).message }));
         } finally {
-          setDetailLoading(false);
+          if (seq === selSeq.current) setDetailLoading(false);
         }
       }
       // Abrir marca como lida (backend já persistiu) — reflete na lista na
@@ -885,12 +900,32 @@ export default function App() {
     }
   }, [openMsg]);
 
-  /** Duplo clique numa mensagem → abre em janela própria (modal grande). */
+  /** Duplo clique numa mensagem → abre em janela própria (modal grande).
+   *  Na pasta Rascunhos o duplo clique reabre a janela de composição — como
+   *  no Outlook, que volta a editar o rascunho em vez de só lê-lo. */
   const openMessageWindow = useCallback(
     async (item: ItemSummary, sourceId?: string, folderId?: string) => {
       const sid = sourceId ?? selected?.sourceId;
       const fid = folderId ?? selected?.folder.id;
       if (sid === undefined || fid === undefined) return;
+      const node = findNode(folderTrees[sid] || [], fid) ?? selected?.folder;
+      const arcName = fid.startsWith('arc:') ? fid.slice(4).split('/').pop() || '' : '';
+      const isDrafts =
+        folderKindOf(node?.name || '') === 'drafts' ||
+        folderKindOf(node?.archiveName || '') === 'drafts' ||
+        folderKindOf(arcName) === 'drafts';
+      if (isDrafts) {
+        try {
+          const payload = await window.outlook.openDraft(sid, fid, item.index);
+          if (payload) {
+            void selectItem(item, sid, fid); // marca na lista também
+            openDraft({ bodyText: '', ...payload } as ComposeDraft);
+            return;
+          }
+        } catch {
+          // falha ao montar o rascunho → abre como mensagem normal
+        }
+      }
       // Seleciona na lista também (marca lida + mostra no painel)
       void selectItem(item, sid, fid);
       const key = detailKey(sid, fid, item.index);
@@ -907,8 +942,38 @@ export default function App() {
         setError(t('Erro ao abrir mensagem: {msg}', { msg: (e as Error).message }));
       }
     },
-    [selected, selectItem],
+    [selected, selectItem, folderTrees],
   );
+
+  // Lembrete: abrir o compromisso no Calendário
+  const openReminderItem = useCallback(async (r: ReminderEvent) => {
+    const tree = folderTrees[r.sourceId];
+    const node = tree ? findNode(tree, r.folderId) : null;
+    if (!node) return;
+    setModule('calendar');
+    await loadFolder(r.sourceId, node);
+    const d = await window.outlook.getItem(r.sourceId, r.folderId, r.index);
+    if (d) setDetail(d);
+    dismissReminderKey(r.key);
+    void window.outlook.snoozeReminder?.(r.key, 0);
+  }, [folderTrees, loadFolder]);
+
+  const dismissReminderKey = useCallback((key: string) => {
+    setReminders((prev) => prev.filter((x) => x.key !== key));
+    // minutes=0 → "dispensar" persistente no main (não volta após reabrir)
+    void window.outlook.snoozeReminder?.(key, 0);
+  }, []);
+
+  const dismissAllReminders = useCallback(() => {
+    for (const r of reminders) void window.outlook.snoozeReminder?.(r.key, 0);
+    setReminders([]);
+  }, [reminders]);
+
+  const snoozeReminders = useCallback((minutes: number) => {
+    for (const r of reminders) void window.outlook.snoozeReminder?.(r.key, minutes);
+    setReminders([]);
+    setNotice(t('Lembrete adiado por {n} min', { n: minutes }));
+  }, [reminders]);
 
   const refresh = useCallback(async () => {
     if (selected) await loadFolder(selected.sourceId, selected.folder);
@@ -1102,14 +1167,28 @@ export default function App() {
       const disp = displayedItemsRef.current.length ? displayedItemsRef.current : items;
       nextPos = disp.findIndex((it) => gone.has(it.index));
       const remainingDisp = disp.filter((it) => !gone.has(it.index));
-      const nxt = nextPos >= 0 ? remainingDisp[Math.min(nextPos, remainingDisp.length - 1)] : null;
+      const nxt =
+        (nextPos >= 0 ? remainingDisp[Math.min(nextPos, remainingDisp.length - 1)] : null) ??
+        remainingDisp[0] ??
+        null;
       nextFp = nxt ? itemFp(nxt) : null;
       remaining = items.filter((it) => !gone.has(it.index));
       setItems(remaining);
       setItemCount((c) => Math.max(0, c - indexes.length));
-      setSelIndexes(new Set());
+      if (nxt) {
+        // PRÉ-SELECIONA o sucessor já: os índices atuais ainda valem em disco
+        // (o IPC ainda não compactou), então o painel troca direto para a
+        // mensagem de baixo — sem tela branca ("piscada") entre o delete e
+        // a seleção, e o usuário pode ir deletando em sequência.
+        setSelIndexes(new Set([nxt.index]));
+        void selectItem(nxt, detailRef.sourceId, detailRef.folderId);
+      } else {
+        setSelIndexes(new Set());
+        setDetail(null);
+      }
+    } else {
+      setDetail(null);
     }
-    setDetail(null);
     try {
       // Fora da lixeira TUDO vai para "Itens Excluídos" — local move o .eml,
       // item do PST é copiado e ocultado (o .pst é somente leitura).
@@ -1148,10 +1227,13 @@ export default function App() {
         detailCache.current.clear(); // índices mudaram — cache por índice é inválido
         setItems(reindexed);
         // Seleciona o sucessor na hora — fingerprint da linha exibida antes
-        // da exclusão (índices antigos já não existem).
+        // da exclusão (índices antigos já não existem). O detalhe já estava
+        // sendo exibido pela pré-seleção; esta chamada só "firma" o índice
+        // novo e a ordem é garantida pelo selSeq dentro de selectItem.
         const next =
           (nextFp ? reindexed.find((it) => itemFp(it) === nextFp) : undefined) ??
-          (nextPos >= 0 ? reindexed[Math.min(nextPos, reindexed.length - 1)] : undefined);
+          (nextPos >= 0 ? reindexed[Math.min(nextPos, reindexed.length - 1)] : undefined) ??
+          reindexed[0];
         if (next) {
           setSelIndexes(new Set([next.index]));
           void selectItem(next, sid, fid);
@@ -1355,12 +1437,136 @@ export default function App() {
     [applyTree],
   );
 
+  /** ItemDetail → NewSpecialItem — preenche o diálogo em modo edição. */
+  const detailToNewItem = useCallback((d: ItemDetail): NewSpecialItem => {
+    const toLocal = (iso?: string | null, dateOnly?: boolean): string => {
+      if (!iso) return '';
+      const dt = new Date(iso);
+      if (isNaN(dt.getTime())) return '';
+      const p = (n: number) => String(n).padStart(2, '0');
+      const date = `${dt.getFullYear()}-${p(dt.getMonth() + 1)}-${p(dt.getDate())}`;
+      return dateOnly ? date : `${date}T${p(dt.getHours())}:${p(dt.getMinutes())}`;
+    };
+    if (d.messageClass.startsWith('IPM.Appointment') || d.messageClass.startsWith('IPM.Schedule.Meeting')) {
+      return {
+        kind: 'appt',
+        subject: d.subject,
+        body: d.body || '',
+        start: toLocal(d.startTime, d.allDay),
+        end: toLocal(d.endTime, d.allDay),
+        location: d.location || '',
+        attendees: d.requiredAttendees || d.allAttendees || '',
+        organizer: d.organizer || '',
+        reminderMin: d.reminderSet ? (d.reminderMinutes ?? 15) : null,
+        allDay: !!d.allDay,
+      };
+    }
+    if (d.messageClass === 'IPM.Contact' && d.contact) {
+      const c = d.contact;
+      return {
+        kind: 'contact',
+        subject: c.displayName || d.subject,
+        body: c.notes || '',
+        contactName: c.displayName,
+        givenName: c.givenName,
+        surname: c.surname,
+        company: c.company,
+        jobTitle: c.jobTitle,
+        dept: c.department,
+        email: c.email1Address || c.email1,
+        email2: c.email2Address || c.email2,
+        phone: c.businessPhone,
+        mobile: c.mobilePhone,
+        birthday: toLocal(c.birthday, true),
+      };
+    }
+    const tk = d.task;
+    return {
+      kind: 'task',
+      subject: d.subject,
+      body: tk?.body || d.body || '',
+      startDate: toLocal(tk?.startDate, true),
+      dueDate: toLocal(tk?.dueDate, true),
+      percentComplete: tk?.percentComplete ?? 0,
+      isComplete: !!tk?.isComplete,
+      owner: tk?.owner || '',
+    };
+  }, []);
+
+  /** O que a área de edição recebe — o diálogo chama isso ao salvar a edição. */
+  const updateSpecialItem = useCallback(
+    async (ref: { sourceId: string; folderId: string; index: number }, item: NewSpecialItem) => {
+      const res = await window.outlook.updateSpecialItem(ref.sourceId, ref.folderId, ref.index, item);
+      applyTree(ref.sourceId, res.tree);
+      setEditingItem(null);
+      // Detalhe em cache ficou velho — recarrega do disco.
+      detailCache.current.delete(detailKey(ref.sourceId, ref.folderId, ref.index));
+      try {
+        const fresh = await window.outlook.getItem(ref.sourceId, ref.folderId, ref.index);
+        setDetail(fresh);
+      } catch {
+        setDetail(null);
+      }
+      if (res.invite) {
+        if (res.invite.sent > 0) {
+          setNotice(t('Convite atualizado enviado para {n} participante(s).', { n: res.invite.sent }));
+        } else if (res.invite.noAccount) {
+          setError(
+            t('Compromisso salvo, mas nenhuma conta de email está configurada para enviar os convites.'),
+          );
+        } else {
+          setError(
+            t('Compromisso salvo, mas falha ao enviar convites: {msg}', {
+              msg: res.invite.error || t('erro desconhecido'),
+            }),
+          );
+        }
+      }
+    },
+    [applyTree, detailKey],
+  );
+
+  /** Abre o diálogo de edição — ReadingPane e inspetor do calendário chamam. */
+  const openItemEditor = useCallback(
+    (ref: { sourceId: string; folderId: string; index: number }, d: ItemDetail) => {
+      setEditingItem({ ...ref, item: detailToNewItem(d) });
+    },
+    [detailToNewItem],
+  );
+
+  /** Botão Editar do item aberto — só itens .eml criados nesta base (X-UM-*). */
+  const editDetailCb =
+    detail?.local && detailRef && /IPM\.(Appointment|Contact|Task)/.test(detail.messageClass)
+      ? () =>
+          openItemEditor(
+            { sourceId: detailRef.sourceId, folderId: detailRef.folderId, index: detail.index },
+            detail,
+          )
+      : undefined;
+
   /** Cria compromisso/contato/tarefa e abre a pasta do item na base escolhida. */
   const saveSpecialItem = useCallback(
     async (sourceId: string, item: NewSpecialItem) => {
-      const tree = await window.outlook.createSpecialItem(sourceId, item);
+      const res = await window.outlook.createSpecialItem(sourceId, item);
+      const tree = res.tree;
       applyTree(sourceId, tree);
       setNewItemKind(null);
+      // Convites de reunião — informa o resultado do envio iMIP.
+      if (res.invite) {
+        if (res.invite.sent > 0) {
+          setNotice(t('Convite enviado para {n} participante(s).', { n: res.invite.sent }));
+        } else if (res.invite.noAccount) {
+          setError(
+            t('Compromisso salvo, mas nenhuma conta de email está configurada para enviar os convites.'),
+          );
+        } else {
+          setError(
+            t('Compromisso salvo, mas falha ao enviar convites: {msg}', {
+              msg: res.invite.error || t('erro desconhecido'),
+            }),
+          );
+        }
+      }
       // Abre a pasta do item criado (Calendário/Contatos/Tarefas) e o módulo certo
       const kind =
         item.kind === 'appt' ? 'calendar' : item.kind === 'contact' ? 'contacts' : 'tasks';
@@ -1685,11 +1891,15 @@ export default function App() {
     return accounts[0]?.id || '';
   }, [detailRef, detail, accounts, sources]);
 
-  /** Responde convite de reunião (Aceitar / Recusar / Propor novo horário). */
+  /** Responde convite de reunião (Aceitar / Recusar / Propor novo horário).
+   *  Feedback via toast inline — o envio SMTP é rápido e o overlay de tela
+   *  cheia bloqueava a UI à toa. */
+  const inviteBusy = useRef(false);
   const respondInvite = useCallback(
     async (response: 'accept' | 'decline' | 'counter', newStart?: string, newEnd?: string) => {
-      if (!detail || !detailRef) return;
-      setLoading(t('Enviando resposta ao organizador…'));
+      if (!detail || !detailRef || inviteBusy.current) return;
+      inviteBusy.current = true;
+      setNotice(t('Enviando resposta ao organizador…'));
       try {
         await window.outlook.respondInvite({
           sourceId: detailRef.sourceId,
@@ -1709,14 +1919,56 @@ export default function App() {
               : t('Nova proposta de horário enviada ao organizador.'),
         );
         setTimeout(() => setNotice(''), 9000);
-        await refreshSources();
+        // Convite respondido sai da listagem — o main já o moveu para Itens
+        // Excluídos (opção padrão do Outlook "excluir após responder"). O
+        // compromisso continua no Calendário/lembretes.
+        const inOpen =
+          selected &&
+          detailRef.sourceId === selected.sourceId &&
+          detailRef.folderId === selected.folder.id;
+        if (inOpen) {
+          const gone = detail.index;
+          const itemFp = (m: ItemSummary) =>
+            `${m.subject} ${m.senderEmailAddress} ${m.deliveryTime ?? ''} ${m.size ?? ''}`;
+          const disp = displayedItemsRef.current.length ? displayedItemsRef.current : items;
+          const pos = disp.findIndex((it) => it.index === gone);
+          const remainingDisp = disp.filter((it) => it.index !== gone);
+          const nxt =
+            (pos >= 0 ? remainingDisp[Math.min(pos, remainingDisp.length - 1)] : null) ??
+            remainingDisp[0] ??
+            null;
+          const nextFp = nxt ? itemFp(nxt) : null;
+          const remaining = items.filter((it) => it.index !== gone);
+          // Reindexação local — o .eml já saiu do disco, posições compactadas
+          const oldArc = items.filter((m) => m.local).length;
+          const newArc = remaining.filter((m) => m.local).length;
+          let li = 0;
+          const reindexed = remaining.map((m) =>
+            m.local ? { ...m, index: li++ } : { ...m, index: newArc + (m.index - oldArc) },
+          );
+          detailCache.current.clear();
+          setItems(reindexed);
+          setItemCount((c) => Math.max(0, c - 1));
+          const next =
+            (nextFp ? reindexed.find((it) => itemFp(it) === nextFp) : undefined) ??
+            (pos >= 0 ? reindexed[Math.min(pos, reindexed.length - 1)] : undefined) ??
+            reindexed[0];
+          if (next) {
+            setSelIndexes(new Set([next.index]));
+            void selectItem(next, detailRef.sourceId, detailRef.folderId);
+          } else {
+            setSelIndexes(new Set());
+            setDetail(null);
+          }
+        }
+        void refreshSources();
       } catch (e) {
         setError(t('Erro ao responder convite: {msg}', { msg: (e as Error).message }));
       } finally {
-        setLoading('');
+        inviteBusy.current = false;
       }
     },
-    [detail, detailRef, defaultAccountId, refreshSources],
+    [detail, detailRef, defaultAccountId, refreshSources, selected, items, selectItem],
   );
 
   const openCompose = useCallback(() => {
@@ -1837,14 +2089,24 @@ export default function App() {
         const disp = displayedItemsRef.current.length ? displayedItemsRef.current : items;
         nextPos = disp.findIndex((it) => gone.has(it.index));
         const remainingDisp = disp.filter((it) => !gone.has(it.index));
-        const nxt = nextPos >= 0 ? remainingDisp[Math.min(nextPos, remainingDisp.length - 1)] : null;
+        const nxt =
+          (nextPos >= 0 ? remainingDisp[Math.min(nextPos, remainingDisp.length - 1)] : null) ??
+          remainingDisp[0] ??
+          null;
         nextFp = nxt ? itemFp(nxt) : null;
         remaining = items.filter((it) => !gone.has(it.index));
         setItems(remaining);
         setItemCount((c) => Math.max(0, c - indexes.length));
-        setSelIndexes(new Set());
-        if (detail && detailRef?.sourceId === sourceId && detailRef.folderId === folderId && gone.has(detail.index)) {
-          setDetail(null);
+        if (nxt) {
+          // Pré-seleção do sucessor — mesmo fluxo da exclusão: o painel
+          // troca direto para a mensagem seguinte, sem piscar.
+          setSelIndexes(new Set([nxt.index]));
+          void selectItem(nxt, sourceId, folderId);
+        } else {
+          setSelIndexes(new Set());
+          if (detail && detailRef?.sourceId === sourceId && detailRef.folderId === folderId && gone.has(detail.index)) {
+            setDetail(null);
+          }
         }
       }
       try {
@@ -1871,7 +2133,8 @@ export default function App() {
         setItems(reindexed);
         const next =
           (nextFp ? reindexed.find((it) => itemFp(it) === nextFp) : undefined) ??
-          (nextPos >= 0 ? reindexed[Math.min(nextPos, reindexed.length - 1)] : undefined);
+          (nextPos >= 0 ? reindexed[Math.min(nextPos, reindexed.length - 1)] : undefined) ??
+          reindexed[0];
         if (next) {
           setSelIndexes(new Set([next.index]));
           void selectItem(next, sourceId, folderId);
@@ -2125,7 +2388,11 @@ export default function App() {
     for (const e of entries) {
       const walk = (nodes: FolderNode[]) => {
         for (const n of nodes) {
-          if (n.containerClass === 'IPF.Appointment' || /^(calend[aá]rio|calendar)$/i.test(n.name)) {
+          if (
+            n.containerClass === 'IPF.Appointment' ||
+            folderKindOf(n.name) === 'calendar' ||
+            folderKindOf(n.archiveName || '') === 'calendar'
+          ) {
             list.push({
               key: `${e.source.id}|${n.id}`,
               sourceId: e.source.id,
@@ -2363,6 +2630,7 @@ export default function App() {
                   onDelete={doDeleteItem}
                   onPrint={printItem}
                   onSaveAs={saveItemAs}
+                  onEditItem={editDetailCb}
                   categories={categories}
                 />
               </>
@@ -2413,6 +2681,7 @@ export default function App() {
                   onDelete={doDeleteItem}
                   onPrint={printItem}
                   onSaveAs={saveItemAs}
+                  onEditItem={editDetailCb}
                   categories={categories}
                 />
               </div>
@@ -2453,6 +2722,7 @@ export default function App() {
                   selectedIndex={detail?.index ?? null}
                   onSelect={selectItem}
                   calendars={allCalendars}
+                  onEditItem={openItemEditor}
                 />
               </>
             )}
@@ -2472,6 +2742,7 @@ export default function App() {
                   onSaveAllAttachments={saveAllAttachments}
                   loadRemoteImages={loadImages}
                   onRespondInvite={respondInvite}
+                  onEditItem={editDetailCb}
                 />
               </>
             )}
@@ -2491,6 +2762,7 @@ export default function App() {
                   onSaveAllAttachments={saveAllAttachments}
                   loadRemoteImages={loadImages}
                   onRespondInvite={respondInvite}
+                  onEditItem={editDetailCb}
                 />
               </>
             )}
@@ -2673,6 +2945,31 @@ export default function App() {
           primarySourceId={apptSourceId}
           onClose={() => setNewItemKind(null)}
           onSave={saveSpecialItem}
+        />
+      )}
+      {editingItem && (
+        <NewItemDialog
+          kind={editingItem.item.kind}
+          sources={sources.filter((s) => s.kind === 'local' || s.kind === 'pst')}
+          // Edição grava na própria base do item — não depende do arquivo principal.
+          primarySourceId={editingItem.sourceId}
+          initial={editingItem.item}
+          onClose={() => setEditingItem(null)}
+          onSave={(_sid, item) =>
+            updateSpecialItem(
+              { sourceId: editingItem.sourceId, folderId: editingItem.folderId, index: editingItem.index },
+              item,
+            )
+          }
+        />
+      )}
+      {reminders.length > 0 && (
+        <ReminderDialog
+          reminders={reminders}
+          onDismiss={dismissReminderKey}
+          onDismissAll={dismissAllReminders}
+          onSnooze={snoozeReminders}
+          onOpen={(r) => void openReminderItem(r)}
         />
       )}
       {showCatsDlg && (

@@ -1,7 +1,8 @@
 import { app, BrowserWindow, dialog, ipcMain, nativeTheme, net, Notification, screen, shell } from 'electron';
 import { basename, join, resolve } from 'path';
+import { tmpdir } from 'os';
 import { randomUUID, createHash } from 'crypto';
-import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync, cpSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync, cpSync, readdirSync, statSync, rmSync } from 'fs';
 import { writeFile } from 'fs/promises';
 import { sourceManager } from './sourceManager';
 import { PstService } from './pstService';
@@ -23,6 +24,7 @@ import { importThunderbirdMail } from './thunderbirdMailImport';
 import type { AccountDraft, ComposeInput, FolderNode, ImportedAccountGuess, MailRule, Signature } from '../shared/types';
 import { DEFAULT_CATEGORIES } from '../shared/types';
 import { safeFsName } from '../shared/fsName';
+import { folderKindOf, type FolderKind } from '../shared/folderNames';
 
 const isDev = !!process.env.ELECTRON_RENDERER_URL;
 
@@ -254,13 +256,158 @@ function scheduleAutoSync(): void {
 
 // ---------- Lembretes de compromissos ----------
 const remindedKeys = new Set<string>();
+/** "Adiar" do modal de lembrete — chave → timestamp em que dispara de novo. */
+const snoozedUntil = new Map<string, number>();
+
+/** Lembretes "dispensados" — persistidos em disco para não voltarem a
+ *  disparar quando o app reabre dentro da janela do compromisso. */
+const dismissedReminders = new Set<string>();
+let dismissedLoaded = false;
+
+function dismissedRemindersPath(): string {
+  return join(dataDir(), 'dismissed-reminders.json');
+}
+
+function loadDismissedReminders(): void {
+  if (dismissedLoaded) return;
+  dismissedLoaded = true;
+  try {
+    const raw = JSON.parse(readFileSync(dismissedRemindersPath(), 'utf-8')) as unknown;
+    if (Array.isArray(raw)) for (const k of raw) dismissedReminders.add(String(k));
+  } catch {
+    // sem arquivo ainda
+  }
+}
+
+function saveDismissedReminders(): void {
+  try {
+    // Poda: a key termina com o startTime ISO — descarta compromissos
+    // passados há mais de 2 dias para o arquivo não crescer sem fim.
+    const cutoff = Date.now() - 2 * 24 * 60 * 60 * 1000;
+    const kept = [...dismissedReminders].filter((k) => {
+      const ts = Date.parse(k.slice(k.lastIndexOf('|') + 1));
+      return isNaN(ts) || ts >= cutoff;
+    });
+    dismissedReminders.clear();
+    for (const k of kept) dismissedReminders.add(k);
+    mkdirSync(dataDir(), { recursive: true });
+    writeFileSync(dismissedRemindersPath(), JSON.stringify(kept));
+  } catch {
+    // best-effort
+  }
+}
+
+/** Respostas já enviadas a convites — UID do VEVENT → 'accept'|'decline'|
+ *  'counter'. Persistido: a barra de convite mostra o estado ao reabrir a
+ *  mensagem em vez dos botões ativos. */
+const respondedInvites = new Map<string, string>();
+let respondedLoaded = false;
+
+function respondedInvitesPath(): string {
+  return join(dataDir(), 'responded-invites.json');
+}
+
+function loadRespondedInvites(): void {
+  if (respondedLoaded) return;
+  respondedLoaded = true;
+  try {
+    const raw = JSON.parse(readFileSync(respondedInvitesPath(), 'utf-8')) as unknown;
+    if (raw && typeof raw === 'object') {
+      for (const [k, v] of Object.entries(raw as Record<string, string>)) {
+        respondedInvites.set(k, String(v));
+      }
+    }
+  } catch {
+    // sem arquivo ainda
+  }
+}
+
+function markInviteResponded(uid: string, response: string): void {
+  if (!uid) return;
+  loadRespondedInvites();
+  respondedInvites.set(uid, response);
+  try {
+    mkdirSync(dataDir(), { recursive: true });
+    writeFileSync(respondedInvitesPath(), JSON.stringify(Object.fromEntries(respondedInvites), null, 1));
+  } catch {
+    // best-effort
+  }
+}
+
+function findFolderNode(nodes: FolderNode[], id: string): FolderNode | null {
+  for (const n of nodes) {
+    if (n.id === id) return n;
+    const f = findFolderNode(n.children, id);
+    if (f) return f;
+  }
+  return null;
+}
+
+/** Tipo semântico da pasta de um item — arc:* pelo nome; pastas do PST pelo
+ *  containerClass/nome do nó na árvore. */
+function mailFolderKind(sourceId: string, folderId: string): FolderKind | null {
+  if (folderId.startsWith('arc:')) {
+    return folderKindOf(folderId.slice(4).split('/').pop() || '');
+  }
+  try {
+    const svc = sourceManager.backend(sourceId) as import('./pstService').PstService;
+    if (typeof svc.getFolderTree !== 'function') return null;
+    const n = findFolderNode(svc.getFolderTree(), folderId);
+    if (!n) return null;
+    if (n.containerClass === 'IPF.Appointment') return 'calendar';
+    if (n.containerClass === 'IPF.Contact') return 'contacts';
+    if (n.containerClass === 'IPF.Task') return 'tasks';
+    return folderKindOf(n.archiveName || '') || folderKindOf(n.name);
+  } catch {
+    return null;
+  }
+}
+
+/** UIDs dos VEVENTs presentes nas pastas de Calendário — um convite cujo
+ *  compromisso já existe no calendário foi aceito (cobre respostas feitas
+ *  antes da persistência de responded-invites). Cache curto: a leitura das
+ *  pastas usa o índice de resumos, mas varremos todas as bases. */
+let calUidCache: { at: number; uids: Set<string> } | null = null;
+
+function invalidateCalendarUids(): void {
+  calUidCache = null;
+}
+
+async function calendarUids(): Promise<Set<string>> {
+  if (calUidCache && Date.now() - calUidCache.at < 60_000) return calUidCache.uids;
+  const uids = new Set<string>();
+  for (const src of sourceManager.listAll()) {
+    const svc = sourceManager.backend(src.id) as import('./pstService').PstService;
+    if (typeof svc.getFolderTree !== 'function' || typeof svc.getItems !== 'function') continue;
+    let tree: FolderNode[];
+    try {
+      tree = svc.getFolderTree();
+    } catch {
+      continue;
+    }
+    for (const cal of calendarFolders(tree)) {
+      try {
+        const items = await svc.getItems(cal.id, 0, 5000);
+        for (const it of items) if (it.apptUid) uids.add(it.apptUid);
+      } catch {
+        // pasta inacessível — segue nas demais
+      }
+    }
+  }
+  calUidCache = { at: Date.now(), uids };
+  return uids;
+}
 
 /** Procura pastas de calendário na árvore de uma base. */
 function calendarFolders(nodes: FolderNode[]): FolderNode[] {
   const out: FolderNode[] = [];
   const walk = (ns: FolderNode[]) => {
     for (const n of ns) {
-      if (n.containerClass === 'IPF.Appointment' || /^(calend[aá]rio|calendar)$/i.test(n.name)) {
+      if (
+        n.containerClass === 'IPF.Appointment' ||
+        folderKindOf(n.name) === 'calendar' ||
+        folderKindOf(n.archiveName || '') === 'calendar'
+      ) {
         out.push(n);
       }
       walk(n.children);
@@ -271,6 +418,7 @@ function calendarFolders(nodes: FolderNode[]): FolderNode[] {
 }
 
 async function checkReminders(): Promise<void> {
+  loadDismissedReminders();
   const now = Date.now();
   for (const src of sourceManager.listAll()) {
     const svc = sourceManager.backend(src.id) as import('./pstService').PstService;
@@ -297,7 +445,13 @@ async function checkReminders(): Promise<void> {
         const minBefore = it.reminderMinutes ?? 15;
         const remindAt = start - minBefore * 60000;
         const key = `${src.id}|${cal.id}|${it.index}|${it.startTime}`;
-        if (remindedKeys.has(key)) continue;
+        if (remindedKeys.has(key) || dismissedReminders.has(key)) continue;
+        // "Adiar": dentro da janela de soneca, pula; ao expirar, toca de novo
+        const snz = snoozedUntil.get(key);
+        if (snz) {
+          if (now < snz) continue;
+          snoozedUntil.delete(key);
+        }
         // Janela: de (início - X min) até 1h depois do início
         if (now >= remindAt && now <= start + 60 * 60000) {
           remindedKeys.add(key);
@@ -317,9 +471,13 @@ async function checkReminders(): Promise<void> {
             // notificação pode falhar em ambientes sem suporte
           }
           mainWindow?.webContents.send('calendar:reminder', {
+            key,
             subject: it.subject,
             startTime: it.startTime,
             location: it.location || '',
+            sourceId: src.id,
+            folderId: cal.id,
+            index: it.index,
           });
         }
       }
@@ -333,6 +491,175 @@ function startReminderTimer(): void {
     checkReminders().catch(() => {});
     setInterval(() => checkReminders().catch(() => {}), 60 * 1000);
   }, 10 * 1000);
+}
+
+/** Extrai endereços de uma lista de participantes ("a@b; Nome <c@d>, e@f"). */
+function parseAttendees(raw?: string): string[] {
+  const out: string[] = [];
+  for (const tok of (raw || '').split(/[;,\n]+/)) {
+    const t = tok.trim();
+    if (!t) continue;
+    const m = t.match(/<([^>]+)>/);
+    const email = (m ? m[1] : t).trim();
+    if (/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email) && !out.includes(email)) out.push(email);
+  }
+  return out;
+}
+
+/**
+ * Envia convites de reunião iMIP (METHOD:REQUEST) aos participantes do
+ * compromisso recém-criado. O .ics vai como alternativa text/calendar, então
+ * Outlook/Thunderbird/Gmail exibem Aceitar/Recusar nativos. O UID é o mesmo
+ * gravado no compromisso — respostas e atualizações correlacionam.
+ * Retorna null quando não há participantes; senão o resumo do envio.
+ */
+/** Conta associada a uma base de dados (deliveryPath); senão a primeira
+ *  com email — mesma regra do "Responder" no renderer. */
+function accountForStore(sourceId: string) {
+  const norm = (p: string) => p.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+  const src = sourceManager.listAll().find((s) => s.id === sourceId);
+  const accts = accountStore.list().filter((a) => a.email);
+  return (
+    (src?.filePath &&
+      accts.find((a) => a.deliveryPath && norm(a.deliveryPath) === norm(src.filePath!))) ||
+    accts[0] ||
+    undefined
+  );
+}
+
+async function sendApptInvites(
+  sourceId: string,
+  item: import('../shared/types').NewSpecialItem,
+): Promise<import('../shared/types').CreateSpecialResult['invite']> {
+  const attendees = parseAttendees(item.attendees);
+  if (!attendees.length) return null;
+
+  // Conta remetente: a vinculada à base de dados do compromisso; senão a
+  // primeira configurada — mesma regra do "Responder" no renderer.
+  const account = accountForStore(sourceId);
+  if (!account) return { sent: 0, failed: attendees.length, noAccount: true };
+
+  const en = appLanguage() === 'en';
+  const loc = en ? 'en-US' : 'pt-BR';
+  const L = en
+    ? { invited: 'You are invited to a meeting.', when: 'When', where: 'Location', by: 'Organizer' }
+    : { invited: 'Você foi convidado para um compromisso.', when: 'Quando', where: 'Local', by: 'Organizador' };
+  const esc = (s: string) =>
+    s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]!);
+  const fold = (s: string) => s.replace(/([\\;,])/g, '\\$1').replace(/\r?\n/g, '\\n');
+  const icsUtc = (iso?: string | null): string =>
+    iso && !isNaN(new Date(iso).getTime())
+      ? new Date(iso).toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '')
+      : '';
+  const icsDate = (iso?: string | null): string => {
+    const d = iso ? new Date(iso) : null;
+    if (!d || isNaN(d.getTime())) return '';
+    const p = (n: number) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}`;
+  };
+  const when = item.start
+    ? `${new Date(item.start).toLocaleString(loc)}${item.end ? ` — ${new Date(item.end).toLocaleString(loc)}` : ''}`
+    : '';
+
+  const ics = [
+    'BEGIN:VCALENDAR',
+    'VERSION:2.0',
+    'PRODID:-//Unit Mail//Compromisso//PT-BR',
+    'CALSCALE:GREGORIAN',
+    'METHOD:REQUEST',
+    'BEGIN:VEVENT',
+    `UID:${item.uid || `${randomUUID()}@unitmail`}`,
+    `DTSTAMP:${icsUtc(new Date().toISOString())}`,
+    item.allDay && item.start
+      ? `DTSTART;VALUE=DATE:${icsDate(item.start)}`
+      : item.start
+        ? `DTSTART:${icsUtc(item.start)}`
+        : '',
+    item.allDay && item.end
+      ? `DTEND;VALUE=DATE:${icsDate(item.end)}`
+      : item.end
+        ? `DTEND:${icsUtc(item.end)}`
+        : '',
+    `SUMMARY:${fold(item.subject || '')}`,
+    item.location ? `LOCATION:${fold(item.location)}` : '',
+    item.body ? `DESCRIPTION:${fold(item.body)}` : '',
+    `ORGANIZER;CN=${account.label || account.email}:mailto:${account.email}`,
+    ...attendees.map(
+      (a) =>
+        `ATTENDEE;CUTYPE=INDIVIDUAL;ROLE=REQ-PARTICIPANT;PARTSTAT=NEEDS-ACTION;RSVP=TRUE;CN=${a}:mailto:${a}`,
+    ),
+    `SEQUENCE:${item.seq ?? 0}`,
+    'STATUS:CONFIRMED',
+    'TRANSP:OPAQUE',
+    item.reminderMin != null
+      ? `BEGIN:VALARM\nTRIGGER:-PT${item.reminderMin}M\nACTION:DISPLAY\nEND:VALARM`
+      : '',
+    'END:VEVENT',
+    'END:VCALENDAR',
+  ]
+    .filter(Boolean)
+    .join('\r\n');
+
+  const html = `
+    <p>${L.invited}</p>
+    <table style="font-family:sans-serif;font-size:14px">
+      <tr><td style="padding-right:12px;color:#666"><b>${L.when}</b></td><td>${esc(when)}</td></tr>
+      ${item.location ? `<tr><td style="padding-right:12px;color:#666"><b>${L.where}</b></td><td>${esc(item.location)}</td></tr>` : ''}
+      <tr><td style="padding-right:12px;color:#666"><b>${L.by}</b></td><td>${esc(account.label || account.email)} &lt;${esc(account.email)}&gt;</td></tr>
+    </table>
+    ${item.body ? `<p>${esc(item.body).replace(/\n/g, '<br>')}</p>` : ''}`;
+
+  const input: import('../shared/types').ComposeInput = {
+    accountId: account.id,
+    to: attendees.join(', '),
+    subject: item.subject || (en ? 'Meeting invitation' : 'Convite de compromisso'),
+    html,
+    noSignature: true,
+    icalEvent: { method: 'REQUEST', contentBase64: Buffer.from(ics, 'utf8').toString('base64') },
+    rawAttachments: [
+      {
+        filename: 'invite.ics',
+        contentBase64: Buffer.from(ics, 'utf8').toString('base64'),
+        contentType: 'text/calendar; method=REQUEST',
+      },
+    ],
+  };
+
+  try {
+    await sendMail(
+      account,
+      accountStore.getPassword(account.id),
+      input,
+      accountStore.getSmtpPassword(account.id),
+    );
+    // Cópia em Itens Enviados — mesmo fluxo do envio normal de mensagens
+    try {
+      const raw = await composeRawMessage(account, input);
+      const store = ensureDeliveryStore(account);
+      if (store) {
+        let svc = sourceManager.serviceForPath(store);
+        if (!svc) {
+          const info = store.toLowerCase().endsWith('.pst')
+            ? sourceManager.openPst(store)
+            : sourceManager.openLocalStore(store);
+          const b = sourceManager.backend(info.id);
+          if (b instanceof PstService) svc = b;
+        }
+        if (svc) {
+          svc.importNamedEml(resolveStoreFolderName(store, 'sent'), raw, true);
+        } else {
+          const dir = kindDirFor(store, 'sent');
+          mkdirSync(dir, { recursive: true });
+          writeFileSync(join(dir, `${Date.now()}-${randomUUID().slice(0, 8)}.eml`), raw);
+        }
+      }
+    } catch {
+      // cópia local best-effort — o convite já foi enviado
+    }
+    return { sent: attendees.length, failed: 0 };
+  } catch (e) {
+    return { sent: 0, failed: attendees.length, error: (e as Error).message };
+  }
 }
 
 let mainWindow: BrowserWindow | null = null;
@@ -864,12 +1191,67 @@ function registerIpc(): void {
       sourceManager.createFolder(sourceId, name, parentFolderId),
   );
 
-  // Novo compromisso / contato / tarefa (Novos Itens da Página Inicial)
+  // Novo compromisso / contato / tarefa (Novos Itens da Página Inicial).
+  // Compromisso com participantes → envia convite iMIP (METHOD:REQUEST) pela
+  // conta vinculada à base de dados (ou a primeira configurada) — como o
+  // Outlook faz ao salvar uma reunião com convidados.
   ipcMain.handle(
     'items:createSpecial',
-    (_e, sourceId: string, item: import('../shared/types').NewSpecialItem) =>
-      sourceManager.createSpecialItem(sourceId, item),
+    async (
+      _e,
+      sourceId: string,
+      item: import('../shared/types').NewSpecialItem,
+    ): Promise<import('../shared/types').CreateSpecialResult> => {
+      const isAppt = item.kind === 'appt';
+      const uid = isAppt ? `${randomUUID()}@unitmail` : undefined;
+      // Organizador = a conta da base — vira o From:/ORGANIZER do .eml salvo
+      // (antes saía sem From: e o "De" aparecia vazio na lista/inspetor).
+      const orgAcct = isAppt && !item.organizer ? accountForStore(sourceId) : undefined;
+      const withOrg = orgAcct
+        ? { ...item, organizer: `${orgAcct.label || orgAcct.email} <${orgAcct.email}>` }
+        : item;
+      const tree = await sourceManager.createSpecialItem(sourceId, uid ? { ...withOrg, uid } : withOrg);
+      if (isAppt) invalidateCalendarUids();
+      const invite = await sendApptInvites(sourceId, uid ? { ...withOrg, uid } : withOrg);
+      return { tree, invite };
+    },
   );
+
+  // Edita compromisso/contato/tarefa existente — regrava o .eml e, se o
+  // compromisso tem participantes, reenvia o convite (mesmo UID, SEQUENCE+1
+  // → os clientes atualizam a reunião em vez de duplicá-la).
+  ipcMain.handle(
+    'items:updateSpecial',
+    async (
+      _e,
+      sourceId: string,
+      folderId: string,
+      index: number,
+      item: import('../shared/types').NewSpecialItem,
+    ): Promise<import('../shared/types').CreateSpecialResult> => {
+      const res = await sourceManager.updateSpecialItem(sourceId, folderId, index, item);
+      if (res.item.kind === 'appt') invalidateCalendarUids();
+      const invite = await sendApptInvites(sourceId, res.item);
+      return { tree: res.tree, invite };
+    },
+  );
+
+  // "Adiar" do lembrete — remove da lista de disparados e agenda novo disparo.
+  // minutes <= 0 significa "dispensar de vez" — grava em disco para não
+  // voltar a disparar após reiniciar o app dentro da janela do compromisso.
+  ipcMain.handle('calendar:snooze', (_e, key: string, minutes: number) => {
+    if (typeof key === 'string' && key) {
+      if (minutes > 0) {
+        remindedKeys.delete(key);
+        snoozedUntil.set(key, Date.now() + Math.min(minutes, 24 * 60) * 60000);
+      } else {
+        loadDismissedReminders();
+        dismissedReminders.add(key);
+        saveDismissedReminders();
+      }
+    }
+    return true;
+  });
 
   ipcMain.handle('folders:rename', (_e, sourceId: string, folderId: string, newName: string) =>
     sourceManager.renameFolder(sourceId, folderId, newName),
@@ -1460,6 +1842,30 @@ function registerIpc(): void {
         ],
       }, accountStore.getSmtpPassword(input.accountId));
 
+      // Resposta enviada com sucesso → marca o convite (por UID, estável
+      // entre pastas/sessões) — a barra deixa de oferecer os botões.
+      markInviteResponded(inv.uid || `${input.sourceId}|${input.folderId}|${input.index}`, input.response);
+
+      // Comportamento padrão do Outlook ("excluir convites de reunião após
+      // responder"): a mensagem do convite sai da listagem e vai para Itens
+      // Excluídos — o compromisso vive no Calendário e nos lembretes.
+      try {
+        const src = sourceManager.listAll().find((s) => s.id === input.sourceId);
+        const kind = mailFolderKind(input.sourceId, input.folderId);
+        if (src?.filePath && kind !== 'deleted' && kind !== 'calendar') {
+          const delName = resolveStoreFolderName(src.filePath, 'deleted');
+          await sourceManager.moveItem(
+            input.sourceId,
+            input.folderId,
+            input.index,
+            input.sourceId,
+            `arc:${delName}`,
+          );
+        }
+      } catch {
+        // remoção é best-effort — a resposta já foi enviada
+      }
+
       // Aceito → grava o compromisso na pasta Calendário da base (local/PST-sombra)
       if (input.response === 'accept') {
         const eventIcs =
@@ -1517,6 +1923,7 @@ function registerIpc(): void {
             // Pasta de calendário já existente (qualquer idioma) ou nome localizado
             const calName = resolveStoreFolderName(defSrc?.filePath || '', 'calendar');
             await pst.importItemEml(`arc:${calName}`, Buffer.from(eml, 'utf8'));
+            invalidateCalendarUids();
           }
         } catch {
           // base não gravável — a resposta já foi enviada
@@ -1803,8 +2210,123 @@ function registerIpc(): void {
       sourceManager.backend(sourceId).getItems(folderId, offset, limit),
   );
 
-  ipcMain.handle('mail:item', (_e, sourceId: string, folderId: string, index: number) =>
-    sourceManager.backend(sourceId).getItem(folderId, index),
+  ipcMain.handle('mail:item', async (_e, sourceId: string, folderId: string, index: number) => {
+    const d = await sourceManager.backend(sourceId).getItem(folderId, index);
+    // Convite já respondido → barra mostra o estado, não os botões.
+    if (d?.invite) {
+      loadRespondedInvites();
+      let resp =
+        (d.invite.uid && respondedInvites.get(d.invite.uid)) ||
+        respondedInvites.get(`${sourceId}|${folderId}|${index}`);
+      // Supressões abaixo valem só para o que exige resposta (REQUEST e
+      // COUNTER — proposta de novo horário). REPLY/CANCEL mantêm o texto
+      // informativo próprio do método.
+      const needsResponse = d.invite.method === 'REQUEST' || d.invite.method === 'COUNTER';
+      if (!resp && needsResponse) {
+        const kind = mailFolderKind(sourceId, folderId);
+        if (kind === 'sent' || kind === 'outbox' || kind === 'drafts') {
+          // Cópia do convite que NÓS enviamos — não é um convite a responder.
+          resp = 'sent';
+        } else if (kind === 'calendar') {
+          // Item dentro do Calendário = compromisso, não convite pendente —
+          // como o Outlook, que não mostra Aceitar/Recusar na reunião.
+          resp = 'accept';
+        } else if (d.invite.uid && (await calendarUids()).has(d.invite.uid)) {
+          // Convite aceito antes da persistência existir — o compromisso
+          // com o mesmo UID já está no Calendário.
+          resp = 'accept';
+        }
+      }
+      if (resp) d.invite.responded = resp;
+    }
+    return d;
+  });
+
+  // ---------- Rascunhos ----------
+  // "Salvar" do editor grava o .eml na pasta Rascunhos do arquivo de dados
+  // principal (como o auto-save do Outlook). Duplo-clique no rascunho reabre
+  // a janela de composição; ao enviar, o rascunho sai da pasta.
+  ipcMain.handle('mail:saveDraft', async (_e, input: ComposeInput) => {
+    const account =
+      accountStore.getFull(input.accountId) || accountStore.list().find((a) => a.email);
+    if (!account) throw new Error('Configure uma conta para salvar rascunhos');
+    const raw = await composeRawMessage(account, { ...input, draft: true });
+    const store = loadSettings().defaultStorePath || ensureDeliveryStore(account);
+    if (!store) throw new Error('Nenhum arquivo de dados disponível para rascunhos');
+    let svc = sourceManager.serviceForPath(store);
+    if (!svc) {
+      const info = store.toLowerCase().endsWith('.pst')
+        ? sourceManager.openPst(store)
+        : sourceManager.openLocalStore(store);
+      const b = sourceManager.backend(info.id);
+      if (b instanceof PstService) svc = b;
+    }
+    if (svc) {
+      svc.importNamedEml(resolveStoreFolderName(store, 'drafts'), raw, true);
+    } else {
+      const dir = kindDirFor(store, 'drafts');
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, `${Date.now()}-${randomUUID().slice(0, 8)}.eml`), raw);
+    }
+    return true;
+  });
+
+  // Reabre um rascunho para edição — devolve o payload do compose com os
+  // anexos extraídos para arquivos temporários (reanexados no envio).
+  ipcMain.handle(
+    'mail:openDraft',
+    async (_e, sourceId: string, folderId: string, index: number) => {
+      const svc = sourceManager.backend(sourceId);
+      const d = await svc.getItem(folderId, index);
+      if (!d) return null;
+      // Limpa cópias temp de rascunhos abertos há mais de um dia
+      const tmpRoot = join(tmpdir(), 'unitmail-drafts');
+      try {
+        for (const e of readdirSync(tmpRoot, { withFileTypes: true })) {
+          const p = join(tmpRoot, e.name);
+          if (Date.now() - statSync(p).mtimeMs > 24 * 3600 * 1000) rmSync(p, { recursive: true, force: true });
+        }
+      } catch {
+        // raiz ainda não existe
+      }
+      const atts: string[] = [];
+      const dir = join(tmpRoot, `${Date.now()}-${randomUUID().slice(0, 8)}`);
+      for (const a of d.attachments || []) {
+        try {
+          const data = await svc.getAttachmentData(folderId, index, a.index);
+          mkdirSync(dir, { recursive: true });
+          const p = join(dir, safeFsName(a.filename || `anexo-${a.index}`));
+          writeFileSync(p, Buffer.from(data.dataBase64, 'base64'));
+          atts.push(p);
+        } catch {
+          // anexo ilegível — não impede reabrir o rascunho
+        }
+      }
+      const hdrVal = (k: string) =>
+        new RegExp(`^${k}:\\s*(.+)$`, 'im').exec(d.transportMessageHeaders || '')?.[1]?.trim();
+      const bcc = hdrVal('bcc') || '';
+      const acct = accountStore
+        .list()
+        .find(
+          (a) => a.email && a.email.toLowerCase() === (d.senderEmailAddress || '').toLowerCase(),
+        );
+      const payload: import('../shared/types').ComposeDraftPayload = {
+        accountId: acct?.id || '',
+        to: d.displayTo || '',
+        cc: d.displayCC || undefined,
+        bcc: bcc || undefined,
+        subject: d.subject || '',
+        bodyHtml: d.bodyHTML || undefined,
+        bodyText: d.body || '',
+        attachmentPaths: atts.length ? atts : undefined,
+        // Cabeçalhos de threading — rascunho de resposta volta a responder
+        // na mesma thread ao enviar.
+        inReplyTo: hdrVal('in-reply-to') || undefined,
+        references: hdrVal('references') || undefined,
+        draftRef: { sourceId, folderId, index },
+      };
+      return payload;
+    },
   );
 
   ipcMain.handle(

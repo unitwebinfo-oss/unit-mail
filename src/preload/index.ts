@@ -6,6 +6,7 @@ import type {
   AttachmentData,
   ComposeDraftPayload,
   ComposeInput,
+  CreateSpecialResult,
   FolderNode,
   ImportedAccountGuess,
   ItemDetail,
@@ -48,6 +49,14 @@ export interface OutlookApi {
   testAccount(draft: AccountDraft): Promise<AccountTestResult>;
   connectAccount(accountId: string): Promise<MailSource>;
   sendMail(input: ComposeInput): Promise<boolean>;
+  /** Salva o conteúdo do compose na pasta Rascunhos do arquivo de dados principal. */
+  saveDraft(input: ComposeInput): Promise<boolean>;
+  /** Recupera um rascunho salvo para edição (anexos viram arquivos temporários). */
+  openDraft(
+    sourceId: string,
+    folderId: string,
+    index: number,
+  ): Promise<ComposeDraftPayload | null>;
   pickAttachments(): Promise<string[]>;
   pickImage(): Promise<string | null>;
   /** Abre o rascunho numa janela de composição separada (como no Outlook). */
@@ -163,8 +172,16 @@ export interface OutlookApi {
   setItemCategories(sourceId: string, folderId: string, indexes: number[], cats: string[]): Promise<boolean>;
   moveFolder(sourceId: string, folderId: string, newParentFolderId: string | null): Promise<FolderNode[]>;
   createFolder(sourceId: string, name: string, parentFolderId: string | null): Promise<FolderNode[]>;
-  /** Cria compromisso/contato/tarefa na base — retorna a árvore atualizada. */
-  createSpecialItem(sourceId: string, item: NewSpecialItem): Promise<FolderNode[]>;
+  /** Cria compromisso/contato/tarefa na base — retorna a árvore atualizada
+   *  + resumo do envio de convites (compromisso com participantes). */
+  createSpecialItem(sourceId: string, item: NewSpecialItem): Promise<CreateSpecialResult>;
+  /** Edita item especial existente; reenvia convite se houver participantes. */
+  updateSpecialItem(
+    sourceId: string,
+    folderId: string,
+    index: number,
+    item: NewSpecialItem,
+  ): Promise<CreateSpecialResult>;
   renameFolder(sourceId: string, folderId: string, newName: string): Promise<FolderNode[]>;
   deleteFolder(sourceId: string, folderId: string): Promise<FolderNode[]>;
   /** Oculta/reexibe uma pasta na árvore — retorna a árvore atualizada. */
@@ -208,8 +225,18 @@ export interface OutlookApi {
   onMailto(cb: (url: string) => void): () => void;
   /** Lembrete de compromisso disparado pelo main — retorna unsubscribe. */
   onCalendarReminder(
-    cb: (e: { subject: string; startTime: string; location: string }) => void,
+    cb: (e: {
+      key: string;
+      subject: string;
+      startTime: string;
+      location: string;
+      sourceId: string;
+      folderId: string;
+      index: number;
+    }) => void,
   ): () => void;
+  /** "Adiar" do modal de lembrete — dispara de novo após N minutos. */
+  snoozeReminder(key: string, minutes: number): Promise<boolean>;
   syncAccount(accountId: string): Promise<SyncResult>;
   syncAll(): Promise<SyncResult[]>;
   /** Autocompletar de contatos — histórico de destinatários enviados. */
@@ -317,6 +344,9 @@ const api: OutlookApi = {
   testAccount: (draft) => ipcRenderer.invoke('accounts:test', draft),
   connectAccount: (accountId) => ipcRenderer.invoke('accounts:connect', accountId),
   sendMail: (input) => ipcRenderer.invoke('accounts:send', input),
+  saveDraft: (input) => ipcRenderer.invoke('mail:saveDraft', input),
+  openDraft: (sourceId, folderId, index) =>
+    ipcRenderer.invoke('mail:openDraft', sourceId, folderId, index),
   pickAttachments: () => ipcRenderer.invoke('dialog:pickAttachments'),
   pickImage: () => ipcRenderer.invoke('dialog:pickImage'),
   openComposeWindow: (draft) => ipcRenderer.invoke('compose:openWindow', draft),
@@ -386,6 +416,8 @@ const api: OutlookApi = {
     ipcRenderer.invoke('folders:create', sourceId, name, parentFolderId),
   createSpecialItem: (sourceId, item) =>
     ipcRenderer.invoke('items:createSpecial', sourceId, item),
+  updateSpecialItem: (sourceId, folderId, index, item) =>
+    ipcRenderer.invoke('items:updateSpecial', sourceId, folderId, index, item),
   renameFolder: (sourceId, folderId, newName) =>
     ipcRenderer.invoke('folders:rename', sourceId, folderId, newName),
   deleteFolder: (sourceId, folderId) => ipcRenderer.invoke('folders:delete', sourceId, folderId),
@@ -428,11 +460,21 @@ const api: OutlookApi = {
   onCalendarReminder: (cb) => {
     const listener = (
       _e: unknown,
-      ev: { subject: string; startTime: string; location: string },
+      ev: {
+        key: string;
+        subject: string;
+        startTime: string;
+        location: string;
+        sourceId: string;
+        folderId: string;
+        index: number;
+      },
     ) => cb(ev);
     ipcRenderer.on('calendar:reminder', listener);
     return () => ipcRenderer.removeListener('calendar:reminder', listener);
   },
+  snoozeReminder: (key, minutes) =>
+    ipcRenderer.invoke('calendar:snooze', key, minutes),
   syncAccount: (accountId) => ipcRenderer.invoke('accounts:sync', accountId),
   syncAll: () => ipcRenderer.invoke('accounts:syncAll'),
   suggestContacts: (q) => ipcRenderer.invoke('contacts:suggest', q),

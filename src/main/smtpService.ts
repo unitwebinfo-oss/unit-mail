@@ -14,7 +14,7 @@ export function resolveSignatureHtml(account: AccountConfig, kind?: ComposeInput
 function buildMailOptions(account: AccountConfig, input: ComposeInput) {
   // Se o editor já embutiu a assinatura no corpo (bloco data-sig), não anexa de novo
   const bodyHasSig = input.html.includes('data-sig');
-  const sig = bodyHasSig ? '' : resolveSignatureHtml(account, input.kind);
+  const sig = input.noSignature || bodyHasSig ? '' : resolveSignatureHtml(account, input.kind);
   const signatureHtml = sig ? `<br><br>${sig}` : '';
   return {
     from: `"${account.label || account.email}" <${account.email}>`,
@@ -23,8 +23,19 @@ function buildMailOptions(account: AccountConfig, input: ComposeInput) {
     bcc: input.bcc || undefined,
     subject: input.subject,
     html: input.html + signatureHtml,
+    // Rascunho — mesma marca que o Outlook grava nos itens de Rascunhos
+    headers: input.draft ? { 'X-Unsent': '1' } : undefined,
     inReplyTo: input.inReplyTo || undefined,
     references: input.references || undefined,
+    // iMIP: nodemailer coloca o VCALENDAR como alternativa text/calendar —
+    // Outlook/Thunderbird/Gmail mostram botões Aceitar/Recusar nativos.
+    icalEvent: input.icalEvent
+      ? {
+          method: input.icalEvent.method,
+          filename: 'invite.ics',
+          content: Buffer.from(input.icalEvent.contentBase64, 'base64'),
+        }
+      : undefined,
     attachments: [
       ...(input.attachmentPaths || []).map((p) => ({
         filename: basename(p),

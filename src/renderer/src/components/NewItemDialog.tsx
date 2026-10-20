@@ -9,6 +9,12 @@ const TITLE_KEYS: Record<NewSpecialItem['kind'], string> = {
   task: 'Nova Tarefa',
 };
 
+const EDIT_TITLE_KEYS: Record<NewSpecialItem['kind'], string> = {
+  appt: 'Editar Compromisso',
+  contact: 'Editar Contato',
+  task: 'Editar Tarefa',
+};
+
 function F({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="fld">
@@ -23,6 +29,7 @@ export function NewItemDialog({
   kind,
   sources,
   primarySourceId,
+  initial,
   onClose,
   onSave,
 }: {
@@ -31,11 +38,14 @@ export function NewItemDialog({
   sources: MailSource[];
   /** Arquivo de dados principal (sourceId aberto) — destino fixo dos itens especiais. */
   primarySourceId?: string;
+  /** Valores atuais do item em edição — edição quando presente. */
+  initial?: NewSpecialItem;
   onClose: () => void;
   onSave: (sourceId: string, item: NewSpecialItem) => Promise<void> | void;
 }) {
   useLang();
-  const [item, setItem] = useState<NewSpecialItem>({ kind, subject: '' });
+  const editing = !!initial;
+  const [item, setItem] = useState<NewSpecialItem>(initial ?? { kind, subject: '' });
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
 
@@ -79,7 +89,7 @@ export function NewItemDialog({
               name={kind === 'appt' ? 'calendar' : kind === 'contact' ? 'contact' : 'task'}
               size={15}
             />{' '}
-            {t(TITLE_KEYS[kind])}
+            {t((editing ? EDIT_TITLE_KEYS : TITLE_KEYS)[kind])}
           </strong>
           <button className="set-close" onClick={onClose} title={t('Fechar')}>
             <Icon name="close" size={15} />
@@ -89,8 +99,10 @@ export function NewItemDialog({
         <F label={t('Arquivo de dados')}>
           <span style={{ fontSize: 12, color: target ? 'var(--text-dim)' : '#a4262c' }}>
             {target
-              ? `${target.label} (${t('principal')})`
-              : t('Arquivo de dados principal não está aberto')}
+              ? `${target.label}${editing ? '' : ` (${t('principal')})`}`
+              : editing
+                ? t('Arquivo de dados do item não está aberto')
+                : t('Arquivo de dados principal não está aberto')}
           </span>
         </F>
 
@@ -156,6 +168,11 @@ export function NewItemDialog({
               </F>
               <F label={t('Participantes (emails, separados por ;)')}>
                 <input className="inp" value={item.attendees || ''} onChange={(e) => up({ attendees: e.target.value })} />
+                {editing && !!item.attendees?.trim() && (
+                  <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>
+                    {t('As alterações serão enviadas aos participantes.')}
+                  </span>
+                )}
               </F>
             </div>
             <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, cursor: 'pointer' }}>

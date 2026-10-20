@@ -280,6 +280,25 @@ function filterTree(nodes: FolderNode[], cc: string): FolderNode[] {
   return out;
 }
 
+/**
+ * Módulo Email: esconde as pastas de Calendário/Contatos/Tarefas — no Outlook
+ * elas só aparecem nos módulos próprios, nunca na lista de pastas de email.
+ */
+const NON_MAIL_CC = new Set(['IPF.Appointment', 'IPF.Contact', 'IPF.Task']);
+const NON_MAIL_KINDS = new Set(['calendar', 'contacts', 'tasks']);
+function mailFilterTree(nodes: FolderNode[]): FolderNode[] {
+  const out: FolderNode[] = [];
+  for (const n of nodes) {
+    const kind =
+      folderKindOf(n.archiveName || '') ||
+      folderKindOf(n.id.startsWith('arc:') ? n.id.slice(4).split('/').pop() || '' : '') ||
+      folderKindOf(n.name);
+    if (NON_MAIL_CC.has(n.containerClass) || (kind && NON_MAIL_KINDS.has(kind))) continue;
+    out.push({ ...n, children: mailFilterTree(n.children) });
+  }
+  return out;
+}
+
 function findNode(nodes: FolderNode[], id: string): FolderNode | null {
   for (const n of nodes) {
     if (n.id === id) return n;
@@ -340,7 +359,7 @@ export function FolderPane({
   const visibleEntries = entries
     .map((e) => ({
       ...e,
-      tree: module === 'mail' ? e.tree : e.source.kind === 'imap' ? [] : filterTree(e.tree, cc),
+      tree: module === 'mail' ? mailFilterTree(e.tree) : e.source.kind === 'imap' ? [] : filterTree(e.tree, cc),
     }))
     .filter((e) => e.tree.length > 0 || (module === 'mail' && e.source.kind === 'imap'));
 

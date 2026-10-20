@@ -20,6 +20,10 @@ export interface ComposeDraft {
   quoteHtml?: string;
   inReplyTo?: string;
   references?: string;
+  /** Anexos já presentes (rascunho reaberto — cópias temporárias). */
+  attachmentPaths?: string[];
+  /** Rascunho salvo em disco — excluído de Rascunhos após enviar/regravar. */
+  draftRef?: { sourceId: string; folderId: string; index: number };
 }
 
 interface ComposeModalProps {
@@ -256,7 +260,7 @@ export function ComposeModal({ draft, accounts, onClose, onSent, windowed }: Com
   const [showBcc, setShowBcc] = useState(!!draft.bcc);
   const [full, setFull] = useState(false);
   const [subject, setSubject] = useState(draft.subject);
-  const [attachPaths, setAttachPaths] = useState<string[]>([]);
+  const [attachPaths, setAttachPaths] = useState<string[]>(draft.attachmentPaths || []);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState('');
   const [badAddrs, setBadAddrs] = useState<string[]>([]);
@@ -355,11 +359,53 @@ export function ComposeModal({ draft, accounts, onClose, onSent, windowed }: Com
         attachmentPaths: attachPaths,
       };
       await window.outlook.sendMail(input);
+      // Rascunho enviado → o .eml sai de Rascunhos (como no Outlook)
+      if (draft.draftRef) {
+        const r = draft.draftRef;
+        void window.outlook.deleteItem(r.sourceId, r.folderId, r.index).catch(() => {});
+      }
       onSent();
     } catch (e) {
       setError(`Erro ao enviar: ${(e as Error).message}`);
     } finally {
       setSending(false);
+    }
+  };
+
+  const [saving, setSaving] = useState(false);
+  const saveDraft = async () => {
+    if (!accountId) {
+      setError(t('Selecione uma conta de envio.'));
+      return;
+    }
+    setSaving(true);
+    setError('');
+    try {
+      const input: ComposeInput = {
+        accountId,
+        kind,
+        to: normalizeAddrs(to).ok.join('; '),
+        cc: normalizeAddrs(cc).ok.join('; ') || undefined,
+        bcc: normalizeAddrs(bcc).ok.join('; ') || undefined,
+        subject,
+        html: editorRef.current?.innerHTML || '',
+        inReplyTo: draft.inReplyTo,
+        references: draft.references,
+        attachmentPaths: attachPaths,
+      };
+      await window.outlook.saveDraft(input);
+      // Regravar um rascunho aberto remove a versão anterior da pasta
+      if (draft.draftRef) {
+        const r = draft.draftRef;
+        void window.outlook.deleteItem(r.sourceId, r.folderId, r.index).catch(() => {});
+      }
+      // Avisa a janela principal para atualizar a lista de Rascunhos
+      void window.outlook.composeNotifySent?.().catch(() => {});
+      onClose();
+    } catch (e) {
+      setError(t('Erro ao salvar rascunho: {msg}', { msg: (e as Error).message }));
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -571,10 +617,18 @@ export function ComposeModal({ draft, accounts, onClose, onSent, windowed }: Com
           {error && <div style={{ color: '#c00', fontSize: 12 }}>{error}</div>}
         </div>
         <div className="compose-footer">
-          <button disabled={sending} onClick={send} className="primary-btn">
+          <button disabled={sending || saving} onClick={send} className="primary-btn">
             {sending ? t('Enviando…') : t('Enviar')}
           </button>
-          <button disabled={sending} onClick={onClose} style={inputStyle}>
+          <button
+            disabled={sending || saving}
+            onClick={saveDraft}
+            style={inputStyle}
+            title={t('Salvar na pasta Rascunhos')}
+          >
+            {saving ? t('Salvando…') : t('Salvar')}
+          </button>
+          <button disabled={sending || saving} onClick={onClose} style={inputStyle}>
             {t('Cancelar')}
           </button>
         </div>

@@ -76,7 +76,7 @@ const KINDS: Record<FolderKind, FolderKindDef> = {
   calendar: {
     pt: 'Calendário',
     en: 'Calendar',
-    aliases: ['calendario', 'calendário', 'calendar', 'agenda'],
+    aliases: ['calendario', 'calendário', 'calendar', 'agenda', 'calendarios', 'calendários', 'calendars'],
   },
   contacts: {
     pt: 'Contatos',

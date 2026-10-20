@@ -27,6 +27,8 @@ interface ReadingPaneProps {
   onDelete?: () => void;
   onPrint?: () => void;
   onSaveAs?: () => void;
+  /** Editar compromisso/contato/tarefa criado nesta base (X-UM-*). */
+  onEditItem?: () => void;
   /** Lista-mestre de categorias — selos coloridos no cabeçalho. */
   categories?: MailCategory[];
 }
@@ -37,6 +39,30 @@ interface ReadingPaneProps {
  *  O primeiro atributo target vence — duplicatas originais são ignoradas. */
 export function externalizeLinks(html: string): string {
   return html.replace(/<a(?=[\s>])/gi, '<a target="_blank" rel="noopener noreferrer"');
+}
+
+/** Remove <script> do HTML exibido — o iframe sandboxed já bloquearia a
+ *  execução, mas tirar da árvore elimina os warnings "Blocked script
+ *  execution" no console e enxuga o documento. */
+function stripScripts(html: string): string {
+  return html
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script[^>]*>/gi, '')
+    .replace(/<script\b[^>]*\/?>/gi, '');
+}
+
+/**
+ * Remove carregadores de CSS/fontes REMOTOS do HTML do email:
+ *  - <link href="http…"> (stylesheets e fontes externas — ex.: Google Fonts)
+ *  - blocos @font-face { … url(http…) } e linhas @import http…
+ * Fonte remota é vetor de rastreamento igual a imagem externa — e a CSP do
+ * srcdoc bloquearia de qualquer forma, gerando warnings no console.
+ * Não toca em <img>/background — esses respeitam a opção "baixar imagens".
+ */
+function stripRemoteStyles(html: string): string {
+  return html
+    .replace(/<link\b[^>]*\bhref\s*=\s*["']https?:\/\/[^>]*>/gi, '')
+    .replace(/@font-face[^{}]*\{[^{}]*url\(\s*['"]?https?:\/\/[^{}]*\}/gi, '')
+    .replace(/@import\s+(?:url\(\s*)?['"]?https?:\/\/[^;'")]*['"]?\s*\)?[^;]*;/gi, '');
 }
 
 /** Esconde imagens remotas (src http/https e url()) — privacidade, como o Outlook bloqueia por padrão. */
@@ -71,7 +97,7 @@ function MailBody({ item, loadRemoteImages }: { item: ItemDetail; loadRemoteImag
         <iframe
           sandbox="allow-popups allow-popups-to-escape-sandbox"
           title="email"
-          srcDoc={externalizeLinks(html)}
+          srcDoc={externalizeLinks(stripScripts(stripRemoteStyles(html)))}
         />
       </>
     );
@@ -269,8 +295,19 @@ function InviteBar({
   const [done, setDone] = React.useState('');
   const inv = item.invite!;
 
-  if (done) {
-    return <div className="invite-bar responded">✔ {done}</div>;
+  // Resposta já enviada (nesta sessão ou registrada em disco) — o Outlook
+  // mostra o estado "Você respondeu" em vez dos botões.
+  const persisted = inv.responded
+    ? inv.responded === 'accept'
+      ? t('Convite aceito')
+      : inv.responded === 'decline'
+        ? t('Convite recusado')
+        : inv.responded === 'sent'
+          ? t('Convite enviado')
+          : t('Nova proposta de horário enviada')
+    : '';
+  if (done || persisted) {
+    return <div className="invite-bar responded">✔ {done || persisted}</div>;
   }
   if (inv.method === 'CANCEL') {
     return (
@@ -366,6 +403,7 @@ export function ReadingPane({
   onDelete,
   onPrint,
   onSaveAs,
+  onEditItem,
   categories,
 }: ReadingPaneProps) {
   const lang = useLang();
@@ -480,9 +518,17 @@ export function ReadingPane({
     <div className="reading-pane">
       <div className="rp-header">
         {header}
-        {showActions && (
+        {(showActions || (onEditItem && (isContact || isTask))) && (
           <div className="rp-head-actions">
             <div className="rp-action-row">
+              {onEditItem && (
+                <button onClick={onEditItem} title={t('Editar')}>
+                  <Icon name="pen" size={14} />
+                  {t('Editar')}
+                </button>
+              )}
+              {showActions && (
+              <>
               <button onClick={onReply} title={t('Responder')}>
                 <Icon name="reply" size={14} />
                 {t('Responder')}
@@ -545,6 +591,8 @@ export function ReadingPane({
                   </>
                 )}
               </span>
+              </>
+              )}
             </div>
             {!isAppointment && (
               <div className="rp-date">{fmtFullDate(item.deliveryTime || item.sentTime)}</div>

@@ -506,7 +506,7 @@ body {
 
 .msg-header {
   display: grid;
-  grid-template-columns: 22px var(--col-from, 200px) 1fr var(--col-date, 140px) var(--col-size, 58px);
+  grid-template-columns: 40px var(--col-from, 200px) 1fr var(--col-date, 140px) var(--col-size, 58px);
   align-items: center;
   gap: 6px;
   padding: 3px 10px;
@@ -580,7 +580,7 @@ body {
 /* Linha compacta de uma mensagem — uma linha, colunas fixas */
 .msg-line {
   display: grid;
-  grid-template-columns: 22px var(--col-from, 200px) 1fr var(--col-date, 140px) var(--col-size, 58px);
+  grid-template-columns: 40px var(--col-from, 200px) 1fr var(--col-date, 140px) var(--col-size, 58px);
   align-items: center;
   gap: 6px;
   padding: 0 10px;
@@ -599,13 +599,14 @@ body {
 }
 .msg-line .ml-icons {
   display: inline-flex;
-  gap: 3px;
+  gap: 4px;
   align-items: center;
   color: var(--text-dim);
 }
 .msg-line .ml-icons svg {
-  width: 12px;
-  height: 12px;
+  width: 15px;
+  height: 15px;
+  flex-shrink: 0; /* sem isso, 2 ícones espremiam e encolhiam na coluna estreita */
 }
 .msg-line .ml-from,
 .msg-line .ml-subject,
@@ -3714,3 +3715,31 @@ body.dark .btn-ghost.danger:hover:not(:disabled) { background: rgba(196, 43, 28,
   padding: 26px 16px; text-align: center; color: var(--text-dim); font-size: 12.5px;
   border: 1.5px dashed var(--border); border-radius: 10px; background: var(--surface-alt);
 }
+
+/* ---------- Janela de lembretes (estilo Outlook) ---------- */
+.reminder-window {
+  background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+  width: 560px; max-width: 94vw; max-height: 70vh; display: flex; flex-direction: column;
+  box-shadow: 0 18px 50px rgba(0,0,0,.4); overflow: hidden;
+}
+.reminder-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 16px; border-bottom: 1px solid var(--border);
+  font-size: 13.5px;
+}
+.reminder-head strong { display: flex; align-items: center; gap: 8px; }
+.reminder-list { flex: 1; overflow-y: auto; }
+.reminder-row {
+  display: flex; align-items: center; gap: 12px;
+  padding: 12px 16px; border-bottom: 1px solid var(--border);
+}
+.reminder-row:last-child { border-bottom: 0; }
+.reminder-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.reminder-info strong { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.reminder-info span { font-size: 11.5px; color: var(--text-dim); }
+.reminder-row-actions { display: flex; gap: 6px; flex-shrink: 0; }
+.reminder-foot {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 16px; border-top: 1px solid var(--border); background: var(--surface-alt);
+}
+.reminder-snooze { display: flex; align-items: center; gap: 6px; }

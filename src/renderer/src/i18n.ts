@@ -426,6 +426,14 @@ const EN: Record<string, string> = {
   'Verificar novas mensagens a cada': 'Check for new messages every',
   '1 minuto': '1 minute',
   '{n} minutos': '{n} minutes',
+  '1 hora': '1 hour',
+  '1 Lembrete': '1 Reminder',
+  '{n} Lembretes': '{n} Reminders',
+  'Abrir item': 'Open Item',
+  'Dispensar': 'Dismiss',
+  'Dispensar todos': 'Dismiss All',
+  'Adiar': 'Snooze',
+  'Lembrete adiado por {n} min': 'Reminder snoozed for {n} min',
   'Privacidade': 'Privacy',
   'Baixar imagens externas automaticamente': 'Download external images automatically',
   'Quando desativado (padrão), imagens da internet dentro de emails HTML ficam bloqueadas — remetentes não podem rastrear quando você abriu a mensagem.':
@@ -1011,6 +1019,7 @@ const EN: Record<string, string> = {
   'Informe o nome do contato.': 'Enter the contact name.',
   'Informe o assunto.': 'Enter a subject.',
   'O arquivo de dados principal não está aberto. Abra-o ou defina outro em Configurações → Arquivos de Dados.': 'The primary data file is not open. Open it or set another in Settings → Data Files.',
+  'Arquivo de dados do item não está aberto': "The item's data file is not open",
   'Arquivo de dados principal não está aberto': 'Primary data file is not open',
   'Nome completo': 'Full name',
   'Sobrenome': 'Last name',
@@ -1060,6 +1069,9 @@ const EN: Record<string, string> = {
   'Esta mensagem é uma resposta a um convite de reunião.': 'This message is a response to a meeting invitation.',
   'Convite aceito': 'Invitation accepted',
   'Convite recusado': 'Invitation declined',
+  'Convite enviado': 'Invitation sent',
+  'Salvar na pasta Rascunhos': 'Save to Drafts folder',
+  'Erro ao salvar rascunho: {msg}': 'Error saving draft: {msg}',
   'Aceitar': 'Accept',
   'Recusar': 'Decline',
   'Cancelar proposta': 'Cancel proposal',
@@ -1082,4 +1094,18 @@ const EN: Record<string, string> = {
   'Arquivos de dados…': 'Data files…',
   'Configurar contas…': 'Set up accounts…',
   'Selecione uma conta de envio.': 'Select a sending account.',
+  // Convites de reunião
+  'Convite enviado para {n} participante(s).': 'Invitation sent to {n} attendee(s).',
+  'Compromisso salvo, mas nenhuma conta de email está configurada para enviar os convites.':
+    'Appointment saved, but no email account is configured to send the invitations.',
+  'Compromisso salvo, mas falha ao enviar convites: {msg}':
+    'Appointment saved, but failed to send invitations: {msg}',
+  'Convite atualizado enviado para {n} participante(s).':
+    'Updated invitation sent to {n} attendee(s).',
+  'As alterações serão enviadas aos participantes.':
+    'Changes will be sent to attendees.',
+  'Editar Compromisso': 'Edit Appointment',
+  'Editar Contato': 'Edit Contact',
+  'Editar Tarefa': 'Edit Task',
+  'erro desconhecido': 'unknown error',
 };

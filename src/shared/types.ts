@@ -106,6 +106,14 @@ export interface ItemSummary {
   /** Lembrete de compromisso (minutos antes do início) */
   reminderSet?: boolean;
   reminderMinutes?: number;
+  /** Compromisso de dia inteiro */
+  allDay?: boolean;
+  /** Convite/resposta de reunião — método iMIP (REQUEST/CANCEL/REPLY) quando
+   *  o item tem parte text/calendar ou é IPM.Schedule.Meeting.*. */
+  inviteMethod?: string;
+  /** UID iCalendar do VEVENT (compromissos/convites) — correlaciona o convite
+   *  original ao item criado no Calendário ao aceitar. */
+  apptUid?: string;
   /** Ids de MailCategory aplicados ao item (Categorizar). */
   categories?: string[];
   /** Item .eml da parte local da pasta (sombra/base) — itens do PST ficam indefinidos. */
@@ -128,6 +136,9 @@ export interface InviteInfo {
   organizerEmail: string;
   /** iCal bruto do VEVENT, para responder/reagendar */
   ics: string;
+  /** Resposta já enviada ('accept'|'decline'|'counter') — barra mostra o
+   *  estado em vez dos botões, como o Outlook ("Você respondeu em …"). */
+  responded?: string;
 }
 
 export interface ItemDetail extends ItemSummary {
@@ -199,6 +210,10 @@ export interface NewSpecialItem {
   allDay?: boolean;
   attendees?: string;
   organizer?: string;
+  /** UID iCalendar — compartilhado entre o .ics gravado e os convites enviados. */
+  uid?: string;
+  /** SEQUENCE iCalendar — incrementa a cada edição do compromisso. */
+  seq?: number;
   // Contato
   contactName?: string;
   givenName?: string;
@@ -383,6 +398,25 @@ export interface ComposeInput {
   attachmentPaths?: string[];
   /** Anexos gerados em memória (ex.: resposta de convite .ics) */
   rawAttachments?: Array<{ filename: string; contentBase64: string; contentType: string }>;
+  /** Não anexar assinatura da conta (convites de reunião, msgs automáticas) */
+  noSignature?: boolean;
+  /** Convite iMIP — envia o evento como alternativa text/calendar (RSVP nativo). */
+  icalEvent?: { method: string; contentBase64: string };
+  /** Salvar como rascunho — marca X-Unsent: 1 no .eml gravado. */
+  draft?: boolean;
+}
+
+/** Resultado da criação de compromisso/contato/tarefa + envio de convites. */
+export interface CreateSpecialResult {
+  tree: FolderNode[];
+  /** null quando o item não é compromisso ou não tem participantes. */
+  invite: {
+    sent: number;
+    failed: number;
+    /** Motivo do não envio — ex.: nenhuma conta configurada. */
+    error?: string;
+    noAccount?: boolean;
+  } | null;
 }
 
 /** Rascunho passado à janela de composição separada (IPC compose:openWindow). */
@@ -399,6 +433,11 @@ export interface ComposeDraftPayload {
   quoteHtml?: string;
   inReplyTo?: string;
   references?: string;
+  /** Anexos do rascunho — caminhos de arquivo (rascunho reaberto usa cópias temp). */
+  attachmentPaths?: string[];
+  /** Referência do rascunho salvo — após enviar/regravar, o .eml original sai
+   *  de Rascunhos (como o Outlook move o rascunho ao enviar). */
+  draftRef?: { sourceId: string; folderId: string; index: number };
 }
 
 // ===================== Regras de recebimento =====================

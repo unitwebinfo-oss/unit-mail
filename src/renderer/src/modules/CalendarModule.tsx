@@ -23,6 +23,11 @@ interface CalendarModuleProps {
   onSelect: (item: ItemSummary) => void;
   /** Todas as pastas de calendário das bases abertas (para "Meus Calendários"). */
   calendars: CalendarRef[];
+  /** Editar compromisso criado nesta base — abre o diálogo com os dados. */
+  onEditItem?: (
+    ref: { sourceId: string; folderId: string; index: number },
+    detail: ItemDetail,
+  ) => void;
 }
 
 // Semana começa no domingo, como no Outlook. Nomes de dias/meses vêm do
@@ -108,9 +113,12 @@ function MiniMonth({
 function AppointmentInspector({
   item,
   onClose,
+  onEdit,
 }: {
   item: ItemDetail;
   onClose: () => void;
+  /** Presente quando o item é editável (criado nesta base — X-UM-*). */
+  onEdit?: () => void;
 }) {
   useLang();
   return (
@@ -120,9 +128,16 @@ function AppointmentInspector({
           <h2>
             <Icon name="calendar" size={16} /> {item.subject || t('Compromisso')}
           </h2>
-          <span className="close-x danger" title={t('Fechar')} onClick={onClose}>
-            <Icon name="close" size={16} />
-          </span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            {onEdit && (
+              <button className="btn" onClick={onEdit} title={t('Editar')}>
+                <Icon name="pen" size={13} /> {t('Editar')}
+              </button>
+            )}
+            <span className="close-x danger" title={t('Fechar')} onClick={onClose}>
+              <Icon name="close" size={16} />
+            </span>
+          </div>
         </div>
         <div className="appt-body">
           <div className="appt-row">
@@ -190,6 +205,7 @@ export function CalendarModule({
   selectedIndex,
   onSelect,
   calendars,
+  onEditItem,
 }: CalendarModuleProps) {
   useLang();
   const today = new Date();
@@ -197,6 +213,7 @@ export function CalendarModule({
   const [selectedDay, setSelectedDay] = useState<string>(dayKey(today));
   const [sideW, setSideW] = useState(() => Number(localStorage.getItem('pane.calSideW')) || 240);
   const [openDetail, setOpenDetail] = useState<ItemDetail | null>(null);
+  const [openRef, setOpenRef] = useState<{ sourceId: string; folderId: string; index: number } | null>(null);
   const [search, setSearch] = useState('');
   const dragBase = useRef(0);
 
@@ -285,6 +302,7 @@ export function CalendarModule({
     onSelect(ev);
     try {
       const detail = await window.outlook.getItem(ev.calSourceId, ev.calFolderId, ev.index);
+      setOpenRef({ sourceId: ev.calSourceId, folderId: ev.calFolderId, index: ev.index });
       setOpenDetail(detail);
     } catch {
       // detalhe indisponível — a seleção no painel de leitura ainda funciona
@@ -470,7 +488,26 @@ export function CalendarModule({
           })}
         </div>
       </div>
-      {openDetail && <AppointmentInspector item={openDetail} onClose={() => setOpenDetail(null)} />}
+      {openDetail && (
+        <AppointmentInspector
+          item={openDetail}
+          onClose={() => {
+            setOpenDetail(null);
+            setOpenRef(null);
+          }}
+          onEdit={
+            openDetail.local && openRef && onEditItem
+              ? () => {
+                  const ref = openRef;
+                  const d = openDetail;
+                  setOpenDetail(null);
+                  setOpenRef(null);
+                  onEditItem(ref, d);
+                }
+              : undefined
+          }
+        />
+      )}
     </div>
   );
 }

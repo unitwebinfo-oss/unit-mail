@@ -1,4 +1,7 @@
 import { PSTFile, PSTFolder, PSTMessage, PSTAttachment } from 'pst-extractor';
+// subpath interno da lib — PSTUtil não é reexportado pelo index
+import { PSTUtil } from 'pst-extractor/dist/PSTUtil.class';
+import iconv from 'iconv-lite';
 import { simpleParser } from 'mailparser';
 import { basename, join } from 'path';
 import { createHash, randomUUID } from 'crypto';
@@ -20,6 +23,49 @@ import type {
   SearchResult,
   TaskDetail,
 } from '../shared/types';
+
+// pst-extractor decodifica strings PT_STRING8 com a codepage da mensagem;
+// quando a mensagem não declara PidTagMessageCodepage/InternetCodepage cai
+// em 'utf8' e bytes ANSI (cp1252) viram U+FFFD ("Ol�") — perda irreversível.
+// Interceptamos na fonte: resultado com U+FFFD → re-decodifica os bytes
+// originais como windows-1252 (todo byte é válido e cobre o latim/pt-BR).
+const origCreateJsString = PSTUtil.createJavascriptString.bind(PSTUtil);
+PSTUtil.createJavascriptString = function (
+  data: Buffer,
+  stringType: number,
+  codepage?: string,
+): string {
+  const s = origCreateJsString(data, stringType, codepage);
+  if (s.includes('�') && stringType !== 0x1f && Buffer.isBuffer(data)) {
+    try {
+      const fixed = iconv.decode(data, 'windows1252');
+      return fixed.includes('�') ? s : fixed;
+    } catch {
+      return s;
+    }
+  }
+  return s;
+};
+
+// libmime vem embutido no nodemailer — decodeWords trata =?charset?B/Q?...?=
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const libmime = require('libmime') as { decodeWords: (s: string) => string };
+
+/**
+ * Header .eml com U+FFFD ("Ol�"): o remetente gravou texto ANSI (cp1252)
+ * cru no cabeçalho, sem encoded-word — o mailparser assume utf8 e perde os
+ * bytes. Recupera da linha crua (headerLines preserva latin1) → cp1252 →
+ * decodeWords para as partes codificadas, se houver.
+ */
+function fixDecodedHeader(decoded: string, rawLine: string | undefined): string {
+  if (!decoded || !decoded.includes('�') || !rawLine) return decoded;
+  try {
+    const s = libmime.decodeWords(iconv.decode(Buffer.from(rawLine, 'latin1'), 'windows1252'));
+    return s.includes('�') || !s.trim() ? decoded : s;
+  } catch {
+    return decoded;
+  }
+}
 
 // MAPI named properties para tarefas (PSETID_Task)
 const PR_TASK_START_DATE = 0x8104;
@@ -1145,7 +1191,10 @@ export class PstService {
     const s: ItemSummary = {
       index,
       messageClass: umClass || 'IPM.Note',
-      subject: parsed.subject || '(sem assunto)',
+      subject: fixDecodedHeader(
+        parsed.subject || '(sem assunto)',
+        (parsed.headerLines || []).find((h: { key: string; line: string }) => h.key === 'subject')?.line,
+      ),
       senderName: from.name || from.address || '',
       senderEmailAddress: from.address || '',
       displayTo: to.map((a) => (a.name ? `${a.name} <${a.address}>` : a.address || '')).join('; '),
@@ -1172,17 +1221,23 @@ export class PstService {
         s.startTime = inv.start;
         s.endTime = inv.end;
         s.location = inv.location;
+        s.apptUid = inv.uid || s.apptUid;
         s.reminderSet = true;
         s.reminderMinutes = inv.reminderMinutes ?? 15;
+        // Convite/resposta recebido (REQUEST/CANCEL/REPLY) → ícone de reunião.
+        // PUBLISH = compromisso criado pelo próprio usuário — não é convite.
+        if (inv.method !== 'PUBLISH') s.inviteMethod = inv.method;
       }
     }
 
     // Compromisso criado pelo Unit Mail — headers X-UM-Appt-* (o .ics anexo
     // já preencheu start/end/location; os headers servem de fallback).
     if (umClass === 'IPM.Appointment') {
+      s.apptUid = s.apptUid || hdr('x-um-appt-uid') || undefined;
       s.startTime = s.startTime || hdr('x-um-appt-start') || null;
       s.endTime = s.endTime || hdr('x-um-appt-end') || null;
       s.location = s.location || hdr('x-um-appt-location');
+      s.allDay = hdr('x-um-appt-allday') === '1';
       if (!s.reminderSet && hdr('x-um-appt-reminder')) {
         s.reminderSet = true;
         s.reminderMinutes = Number(hdr('x-um-appt-reminder')) || 15;
@@ -1385,6 +1440,7 @@ export class PstService {
       this.markItemRead(folderId, index);
       const parsed = await simpleParser(readFileSync(join(this.archiveDirFor(folderId), file)));
       const d = await this.detailFromParsed(parsed, index);
+      d.local = true;
       d.categories = this.catsOfKey(`a|${folderId.slice(4)}/${file}`);
       return d;
     }
@@ -1396,6 +1452,7 @@ export class PstService {
       this.markItemRead(folderId, index);
       const parsed = await simpleParser(readFileSync(join(this.archiveDirFor(arcId), file)));
       const d = await this.detailFromParsed(parsed, index);
+      d.local = true;
       d.categories = this.catsOfKey(`a|${arcId.slice(4)}/${file}`);
       return d;
     }
@@ -1596,6 +1653,13 @@ export class PstService {
       // usa o nome localizado
     }
     const folderName = resolveFolderName(existing, kind, appLanguage());
+    const raw = await this.buildSpecialEml(item);
+    this.importNamedEml(folderName, raw, true);
+    return folderName;
+  }
+
+  /** Monta o .eml de um item especial (compromisso/contato/tarefa). */
+  private async buildSpecialEml(item: NewSpecialItem): Promise<Buffer> {
     const headers: Record<string, string> = {};
     const set = (k: string, v: string | number | boolean | null | undefined) => {
       if (v !== undefined && v !== null && v !== '') headers[k] = String(v);
@@ -1610,6 +1674,9 @@ export class PstService {
       set('X-UM-Appt-Location', item.location);
       set('X-UM-Appt-Organizer', item.organizer);
       set('X-UM-Appt-Attendees', item.attendees);
+      set('X-UM-Appt-Uid', item.uid);
+      set('X-UM-Appt-Seq', item.seq ?? 0);
+      set('X-UM-Appt-AllDay', item.allDay ? '1' : '');
       if (item.reminderMin != null) set('X-UM-Appt-Reminder', item.reminderMin);
       const icsLocal = (iso: string): string => {
         const d = new Date(iso);
@@ -1619,7 +1686,9 @@ export class PstService {
           ? `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}`
           : `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}T${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
       };
-      const uid = `${randomUUID()}@unitmail`;
+      // UID vem do chamador quando há convites a enviar — o mesmo UID vai
+      // nos REQUESTs, para que respostas/atualizações correlacionem.
+      const uid = item.uid || `${randomUUID()}@unitmail`;
       const dt = (v?: string) => (v ? icsLocal(v) : '');
       const ics = [
         'BEGIN:VCALENDAR',
@@ -1633,7 +1702,15 @@ export class PstService {
         item.allDay ? `DTEND;VALUE=DATE:${dt(item.end)}` : `DTEND:${dt(item.end)}`,
         `SUMMARY:${(item.subject || '').replace(/\r?\n/g, ' ')}`,
         item.location ? `LOCATION:${item.location.replace(/\r?\n/g, ' ')}` : '',
-        item.organizer ? `ORGANIZER:${item.organizer}` : '',
+        (() => {
+          // "Nome <e@x>" → ORGANIZER;CN=Nome:mailto:e@x (formato iCalendar)
+          const m = /^(.*?)\s*<([^>\s]+)>\s*$/.exec(item.organizer || '');
+          return m
+            ? `ORGANIZER;CN=${(m[1].trim() || m[2]).replace(/["\\;:,]/g, ' ')}:mailto:${m[2]}`
+            : item.organizer
+              ? `ORGANIZER:mailto:${item.organizer}`
+              : '';
+        })(),
         item.body ? `DESCRIPTION:${item.body.replace(/\r?\n/g, '\\n')}` : '',
         item.reminderMin != null
           ? `BEGIN:VALARM\nTRIGGER:-PT${item.reminderMin}M\nACTION:DISPLAY\nEND:VALARM`
@@ -1676,6 +1753,10 @@ export class PstService {
     const MailComposer = require('nodemailer/lib/mail-composer');
     const raw = await new Promise<Buffer>((resolve, reject) => {
       new MailComposer({
+        // Compromisso: organizador como remetente ("De" da lista/do inspetor)
+        // e participantes no "Para" — antes saía sem From: e a linha ficava vazia.
+        from: item.kind === 'appt' && item.organizer ? item.organizer : undefined,
+        to: item.kind === 'appt' && item.attendees ? item.attendees : undefined,
         subject: item.subject || '(sem título)',
         date: new Date(),
         text: item.body || '',
@@ -1685,8 +1766,56 @@ export class PstService {
         .compile()
         .build((e: Error | null, msg: Buffer) => (e ? reject(e) : resolve(msg)));
     });
-    this.importNamedEml(folderName, raw, true);
-    return folderName;
+    return raw;
+  }
+
+  /**
+   * Edita um item especial existente — regrava o MESMO arquivo .eml (posição
+   * na lista e estado de leitura preservados; o mtime novo invalida os
+   * caches de resumo/pesquisa automaticamente). Compromissos mantêm o UID
+   * iCalendar original e incrementam a SEQUENCE — o reenvio do convite
+   * atualiza a reunião nos clientes dos participantes em vez de criar outra.
+   * Retorna o item efetivamente gravado (com uid/seq resolvidos).
+   */
+  async updateSpecialItem(
+    folderId: string,
+    index: number,
+    item: NewSpecialItem,
+  ): Promise<NewSpecialItem> {
+    this.requireOpen();
+    let arcId: string;
+    if (folderId.startsWith('arc:')) {
+      arcId = folderId;
+    } else {
+      const arcCount = this.mergedArcCount(folderId);
+      if (index >= arcCount) {
+        throw new Error('Só é possível editar itens criados nesta base');
+      }
+      arcId = `arc:${this.nodeFor(folderId)!.archiveName}`;
+    }
+    const file = this.archiveFiles(arcId)[index];
+    if (!file) throw new Error('Item não encontrado');
+    const fp = join(this.archiveDirFor(arcId), file);
+    const merged = { ...item };
+    try {
+      const parsed = await simpleParser(readFileSync(fp));
+      const hdr = (n: string): string => {
+        const v = parsed.headers?.get?.(n);
+        return Array.isArray(v) ? String(v[0] ?? '') : v != null ? String(v) : '';
+      };
+      if (item.kind === 'appt') {
+        merged.uid = hdr('x-um-appt-uid') || item.uid;
+        merged.seq = (Number(hdr('x-um-appt-seq')) || 0) + 1;
+        merged.organizer = hdr('x-um-appt-organizer') || item.organizer;
+      }
+    } catch {
+      // arquivo ilegível — segue com os valores recebidos
+    }
+    const raw = await this.buildSpecialEml(merged);
+    writeFileSync(fp, raw);
+    this.fsChanged();
+    this.recountNamedFolder(arcId.slice(4));
+    return merged;
   }
 
   /**
@@ -2035,7 +2164,12 @@ export class PstService {
    *   'a|<rel>|<file>' → .eml local, invalidado por mtime
    *   'p|<folderId>|<i>' → item do PST, invalidado pelo mtime do arquivo
    */
+  // Versão do formato do índice de resumos — bumpar quando campos novos
+  // entram no ItemSummary (ex.: inviteMethod), pois entradas antigas não os têm.
+  private static readonly SUMIDX_VERSION = 4;
+
   private sumIdx: {
+    v?: number;
     fileMtime: number;
     items: Record<string, { m?: number; s: Omit<ItemSummary, 'index' | 'isRead'> }>;
   } | null = null;
@@ -2047,12 +2181,13 @@ export class PstService {
       !this.localOnly && this.filePath && existsSync(this.filePath)
         ? statSync(this.filePath).mtimeMs
         : 0;
-    this.sumIdx = { fileMtime: fm, items: {} };
+    this.sumIdx = { v: PstService.SUMIDX_VERSION, fileMtime: fm, items: {} };
     try {
       if (this.archiveDir) {
         const p = join(this.archiveDir, 'sumindex.json');
         const raw = JSON.parse(readFileSync(p, 'utf8')) as typeof this.sumIdx;
-        if (raw && raw.fileMtime === fm && raw.items) this.sumIdx.items = raw.items;
+        if (raw && raw.v === PstService.SUMIDX_VERSION && raw.fileMtime === fm && raw.items)
+          this.sumIdx.items = raw.items;
       }
     } catch {
       // sem índice ainda — constrói do zero
@@ -2335,6 +2470,9 @@ export class PstService {
       size: msg.messageSize || 0,
       preview: (msg.bodyPrefix || '').trim(),
     };
+    if (mc.startsWith('IPM.Schedule.Meeting')) {
+      s.inviteMethod = /Canc/i.test(mc) ? 'CANCEL' : /Resp/i.test(mc) ? 'REPLY' : 'REQUEST';
+    }
     if (mc.startsWith('IPM.Appointment') || mc.startsWith('IPM.Schedule.Meeting')) {
       s.startTime = toIso(msg.startTime);
       s.endTime = toIso(msg.endTime);
