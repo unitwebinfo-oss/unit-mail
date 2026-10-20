@@ -1,9 +1,10 @@
 import { randomUUID } from 'crypto';
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { dataDir } from './dataDir';
-import { DEFAULT_FOLDERS } from '../shared/types';
 import { safeFsName } from '../shared/fsName';
+import { folderKindOf, folderName, type FolderKind } from '../shared/folderNames';
+import { appLanguage } from './language';
 
 /**
  * Base de dados local ("novo arquivo de dados"). Como não é possível gerar
@@ -18,10 +19,25 @@ export interface LocalStoreDef {
   path: string;
 }
 
-/** Garante que as pastas padrão existem — cobre bases criadas por versões antigas. */
+/**
+ * Garante que as pastas padrão existem — cobre bases criadas por versões
+ * antigas. Para cada tipo semântico só cria se NENHUMA variante de nome já
+ * existir (ex.: base com "Inbox" não ganha uma "Caixa de Entrada" vazia ao
+ * lado) — pastas existentes nunca são renomeadas nem duplicadas.
+ */
 function ensureDefaultFolders(path: string): void {
+  const kinds: FolderKind[] = [
+    'inbox', 'sent', 'deleted', 'quarantine', 'drafts', 'outbox',
+    'junk', 'archive', 'calendar', 'contacts', 'tasks',
+  ];
   try {
-    for (const folder of DEFAULT_FOLDERS) mkdirSync(join(path, folder), { recursive: true });
+    const existing = readdirSync(path, { withFileTypes: true })
+      .filter((d) => d.isDirectory())
+      .map((d) => folderKindOf(d.name));
+    const lang = appLanguage();
+    for (const kind of kinds) {
+      if (!existing.includes(kind)) mkdirSync(join(path, folderName(kind, lang)), { recursive: true });
+    }
   } catch {
     // sem permissão — a pasta será criada sob demanda na primeira entrega
   }

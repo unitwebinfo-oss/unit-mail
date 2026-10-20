@@ -6,12 +6,31 @@ import { archiveRootForPst, adoptSidecarForMovedPst } from './paths';
 import { ImapMailSource } from './imapSource';
 import { Pop3MailSource } from './pop3Source';
 import { accountStore } from './accountStore';
+import { folderKindOf } from '../shared/folderNames';
 import type { MailBackend } from './mailBackend';
 import type { FolderNode, MailSource, NewSpecialItem } from '../shared/types';
 
 interface Entry {
   info: MailSource;
   backend: MailBackend;
+}
+
+/** Procura um nó de pasta pelo id em qualquer nível da árvore. */
+function findNodeById(nodes: FolderNode[], id: string): FolderNode | null {
+  for (const n of nodes) {
+    if (n.id === id) return n;
+    const hit = findNodeById(n.children, id);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+/**
+ * Pastas reservadas do sistema — nunca excluídas pelo usuário. A quarentena
+ * de antivírus em qualquer idioma ("Itens infectados" / "Infected Items").
+ */
+function isProtectedFolderName(name: string): boolean {
+  return folderKindOf(name) === 'quarantine';
 }
 
 /**
@@ -261,6 +280,12 @@ export class SourceManager {
   renameFolder(sourceId: string, folderId: string, newName: string): FolderNode[] {
     const svc = this.backend(sourceId);
     if (!(svc instanceof PstService)) throw new Error('Só arquivos de dados');
+    const node = findNodeById(svc.getFolderTree(), folderId);
+    if (node && isProtectedFolderName(node.name)) {
+      throw new Error(
+        `A pasta "${node.name}" é protegida pelo sistema (quarentena de antivírus) e não pode ser renomeada.`,
+      );
+    }
     svc.renameArchiveFolder(folderId, newName);
     return svc.getFolderTree();
   }
@@ -269,6 +294,13 @@ export class SourceManager {
   deleteFolder(sourceId: string, folderId: string): FolderNode[] {
     const svc = this.backend(sourceId);
     if (!(svc instanceof PstService)) throw new Error('Só arquivos de dados');
+    const tree = svc.getFolderTree();
+    const node = findNodeById(tree, folderId);
+    if (node && isProtectedFolderName(node.name)) {
+      throw new Error(
+        `A pasta "${node.name}" é protegida pelo sistema (quarentena de antivírus) e não pode ser excluída.`,
+      );
+    }
     svc.deleteArchiveFolder(folderId);
     return svc.getFolderTree();
   }
@@ -298,7 +330,9 @@ export class SourceManager {
   /** Marca todos os itens locais da pasta como lidos. */
   markAllRead(sourceId: string, folderId: string): void {
     const svc = this.backend(sourceId);
-    if (!(svc instanceof PstService)) return;
+    if (!(svc instanceof PstService)) {
+      throw new Error('Marcar como lidas ainda não é suportado em contas IMAP.');
+    }
     svc.markAllRead(folderId);
   }
 

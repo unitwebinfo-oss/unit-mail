@@ -1,29 +1,23 @@
 // Tipos compartilhados entre processo principal (Electron) e renderer
 
+import { folderKindOf, defaultFolderNames, type Lang } from './folderNames';
+
 /**
  * Pastas padrão de uma base de dados — criadas automaticamente e usadas por
  * fluxos internos (ex.: excluir → "Itens Excluídos", antivírus → "Itens
  * infectados"). Não podem ser excluídas, renomeadas nem movidas.
+ * Mantida em pt-BR por compatibilidade — criação usa defaultFolderNames(lang).
  */
-export const DEFAULT_FOLDERS = [
-  'Caixa de Entrada',
-  'Itens Enviados',
-  'Itens Excluídos',
-  'Itens infectados',
-  'Rascunhos',
-  'Caixa de Saída',
-  'Lixo Eletrônico',
-  'Arquivo Morto',
-  'Calendário',
-  'Contatos',
-  'Tarefas',
-];
+export const DEFAULT_FOLDERS = defaultFolderNames('pt');
 
 /** A pasta é uma das padrão? Só vale para ids "arc:<Nome>" de primeiro nível
- *  — subpastas criadas pelo usuário dentro delas seguem livres. */
+ *  — subpastas criadas pelo usuário dentro delas seguem livres. Reconhece os
+ *  nomes padrão em qualquer idioma suportado. */
 export function isDefaultFolderId(folderId: string): boolean {
-  return folderId.startsWith('arc:') && DEFAULT_FOLDERS.includes(folderId.slice(4));
+  return folderId.startsWith('arc:') && folderKindOf(folderId.slice(4)) !== null;
 }
+
+export type { Lang };
 
 export interface PstOpenResult {
   fileName: string;
@@ -116,6 +110,9 @@ export interface ItemSummary {
   categories?: string[];
   /** Item .eml da parte local da pasta (sombra/base) — itens do PST ficam indefinidos. */
   local?: boolean;
+  /** E-mail da conta que recebeu a mensagem (carimbo X-UM-Account gravado na
+   *  entrega) — usado pelo "Executar regras" para o filtro por conta. */
+  accountEmail?: string;
 }
 
 /** Convite de reunião (iCalendar / IPM.Schedule.Meeting.*) detectado na mensagem. */
@@ -388,6 +385,22 @@ export interface ComposeInput {
   rawAttachments?: Array<{ filename: string; contentBase64: string; contentType: string }>;
 }
 
+/** Rascunho passado à janela de composição separada (IPC compose:openWindow). */
+export interface ComposeDraftPayload {
+  accountId: string;
+  kind?: 'new' | 'reply' | 'forward';
+  to: string;
+  cc?: string;
+  bcc?: string;
+  subject: string;
+  bodyText?: string;
+  bodyHtml?: string;
+  /** Mensagem original citada (resposta/encaminhamento) — abaixo da assinatura */
+  quoteHtml?: string;
+  inReplyTo?: string;
+  references?: string;
+}
+
 // ===================== Regras de recebimento =====================
 
 /**
@@ -421,6 +434,8 @@ export interface SyncResult {
   archived: number;
   /** Mensagens detectadas como infectadas pelo antivírus local e movidas para "Itens infectados". */
   infected?: number;
+  /** Mensagens com marcação de spam do servidor movidas para "Lixo eletrônico". */
+  junked?: number;
   error?: string;
 }
 

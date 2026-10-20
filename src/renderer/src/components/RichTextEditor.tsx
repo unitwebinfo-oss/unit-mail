@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { t, useLang } from '../i18n';
 
 /** Fontes oferecidas na barra de formatação — conjunto seguro p/ email. */
 const FONTS = [
@@ -15,10 +16,9 @@ const FONTS = [
 /**
  * Editor de texto rico (WYSIWYG) — usado na edição de assinaturas.
  * Renderiza o HTML visualmente (não como código), com toolbar de formatação,
- * inserção de imagem embutida e edição de tamanho por diálogo dedicado
- * (pré-visualização, largura/altura, cadeado de proporção e controle
- * deslizante) — nada de alças de arraste sobre o conteúdo, que falhavam
- * conforme o layout/scrol do editor.
+ * inserção de imagem embutida e redimensionamento DIRETO no corpo: clique na
+ * imagem e arraste a alça do canto inferior direito (proporção mantida) —
+ * estilo Word/Outlook, sem abrir diálogo.
  */
 export function RichTextEditor({
   value,
@@ -31,9 +31,9 @@ export function RichTextEditor({
   placeholder?: string;
   minHeight?: number;
 }) {
+  useLang();
   const ref = useRef<HTMLDivElement>(null);
   const [selImg, setSelImg] = useState<HTMLImageElement | null>(null);
-  const [imgDlgOpen, setImgDlgOpen] = useState(false);
   const loaded = useRef(false);
 
   // Carrega o HTML inicial apenas uma vez por troca de documento —
@@ -94,56 +94,83 @@ export function RichTextEditor({
     setSelImg(img);
   };
 
-  // mousedown na imagem: preventDefault impede a seleção nativa e o drag
-  // fantasma do browser; clique fora dela desmarca.
+  /**
+   * Arraste de redimensionamento — começa na alça do canto (ou no hit-test do
+   * próprio canto da imagem) e acompanha o mouse no documento inteiro, então
+   * funciona mesmo quando o ponteiro sai do editor. Proporção sempre mantida.
+   */
+  const startResize = (img: HTMLImageElement, e: { clientX: number; clientY: number }) => {
+    const r = img.getBoundingClientRect();
+    const w0 = Math.max(8, Math.round(r.width));
+    const h0 = Math.max(8, Math.round(r.height));
+    const ratio =
+      img.naturalWidth > 0 && img.naturalHeight > 0
+        ? img.naturalWidth / img.naturalHeight
+        : w0 / h0;
+    const x0 = e.clientX;
+    const move = (ev: MouseEvent) => {
+      const w = Math.max(8, Math.round(w0 + (ev.clientX - x0)));
+      img.style.width = `${w}px`;
+      img.style.height = `${Math.max(8, Math.round(w / ratio))}px`;
+    };
+    const up = () => {
+      document.removeEventListener('mousemove', move);
+      document.removeEventListener('mouseup', up);
+      sync();
+    };
+    document.addEventListener('mousemove', move);
+    document.addEventListener('mouseup', up);
+  };
+
+  /** O clique foi no canto inferior direito da imagem (zona de arraste)? */
+  const inGripZone = (img: HTMLImageElement, e: { clientX: number; clientY: number }) => {
+    const r = img.getBoundingClientRect();
+    return e.clientX > r.right - 16 && e.clientY > r.bottom - 16;
+  };
+
+  // mousedown na imagem: no canto = redimensionar; no resto = selecionar.
+  // preventDefault impede a seleção nativa e o drag fantasma do browser;
+  // clique fora dela desmarca.
   const onEditorMouseDown = (e: React.MouseEvent) => {
     const t = e.target as HTMLElement;
     if (t instanceof HTMLImageElement && ref.current?.contains(t)) {
       e.preventDefault();
       markSel(t);
+      if (inGripZone(t, e)) startResize(t, e);
       return;
     }
     if (selImg) markSel(null);
   };
 
-  const onEditorDblClick = (e: React.MouseEvent) => {
+  // Cursor "redimensionar" aparece só sobre a zona da alça — dica visual.
+  const onEditorMouseMove = (e: React.MouseEvent) => {
     const t = e.target as HTMLElement;
     if (t instanceof HTMLImageElement && ref.current?.contains(t)) {
-      e.preventDefault();
-      markSel(t);
-      setImgDlgOpen(true);
+      t.style.cursor = inGripZone(t, e) ? 'nwse-resize' : '';
     }
   };
 
   // Se a imagem selecionada sumir do documento (Delete/Backspace), limpa o estado.
   const liveSelImg = selImg && selImg.isConnected ? selImg : null;
 
-  const applyImgSize = (w: number, h: number) => {
-    if (!liveSelImg) return;
-    liveSelImg.style.width = `${w}px`;
-    liveSelImg.style.height = `${h}px`;
-    sync();
-  };
-
   const removeImg = () => {
     if (!liveSelImg) return;
     liveSelImg.remove();
     markSel(null);
-    setImgDlgOpen(false);
     sync();
   };
 
   return (
     <div className="rte">
       <div className="compose-toolbar" style={{ flexWrap: 'wrap' }}>
-        <Tb title="Negrito" onClick={() => exec('bold')}><b>B</b></Tb>
-        <Tb title="Itálico" onClick={() => exec('italic')}><i>I</i></Tb>
-        <Tb title="Sublinhado" onClick={() => exec('underline')}><u>U</u></Tb>
-        <Tb title="Tachado" onClick={() => exec('strikeThrough')}><s>S</s></Tb>
+        <Tb title={t('Negrito')} onClick={() => exec('bold')}><b>B</b></Tb>
+        <Tb title={t('Itálico')} onClick={() => exec('italic')}><i>I</i></Tb>
+        <Tb title={t('Sublinhado')} onClick={() => exec('underline')}><u>U</u></Tb>
+        <Tb title={t('Tachado')} onClick={() => exec('strikeThrough')}><s>S</s></Tb>
         <span className="tb-sep" />
         <select
           className="tb-fontsize tb-fontname"
-          title="Fonte"
+          title={t('Fonte')}
           onMouseDown={(e) => e.stopPropagation()}
           onChange={(e) => {
             if (e.target.value) exec('fontName', e.target.value);
@@ -151,7 +178,7 @@ export function RichTextEditor({
           }}
           defaultValue=""
         >
-          <option value="" disabled>Fonte</option>
+          <option value="" disabled>{t('Fonte')}</option>
           {FONTS.map((f) => (
             <option key={f} value={f} style={{ fontFamily: f }}>
               {f}
@@ -160,7 +187,7 @@ export function RichTextEditor({
         </select>
         <select
           className="tb-fontsize"
-          title="Tamanho da fonte"
+          title={t('Tamanho da fonte')}
           onMouseDown={(e) => e.stopPropagation()}
           onChange={(e) => {
             if (e.target.value) exec('fontSize', e.target.value);
@@ -168,31 +195,31 @@ export function RichTextEditor({
           }}
           defaultValue=""
         >
-          <option value="" disabled>Tamanho</option>
-          <option value="2">Pequena</option>
-          <option value="3">Normal</option>
-          <option value="4">Média</option>
-          <option value="5">Grande</option>
-          <option value="6">Muito grande</option>
+          <option value="" disabled>{t('Tamanho')}</option>
+          <option value="2">{t('Pequena')}</option>
+          <option value="3">{t('Normal')}</option>
+          <option value="4">{t('Média')}</option>
+          <option value="5">{t('Grande')}</option>
+          <option value="6">{t('Muito grande')}</option>
         </select>
         <input
           type="color"
           className="tb-color"
-          title="Cor do texto"
+          title={t('Cor do texto')}
           defaultValue="#000000"
           onMouseDown={(e) => e.stopPropagation()}
           onChange={(e) => exec('foreColor', e.target.value)}
         />
-        <Tb title="Alinhar à esquerda" onClick={() => exec('justifyLeft')}>⇤</Tb>
-        <Tb title="Centralizar" onClick={() => exec('justifyCenter')}>≡</Tb>
-        <Tb title="Alinhar à direita" onClick={() => exec('justifyRight')}>⇥</Tb>
+        <Tb title={t('Alinhar à esquerda')} onClick={() => exec('justifyLeft')}>⇤</Tb>
+        <Tb title={t('Centralizar')} onClick={() => exec('justifyCenter')}>≡</Tb>
+        <Tb title={t('Alinhar à direita')} onClick={() => exec('justifyRight')}>⇥</Tb>
         <span className="tb-sep" />
-        <Tb title="Lista com marcadores" onClick={() => exec('insertUnorderedList')}>•</Tb>
-        <Tb title="Lista numerada" onClick={() => exec('insertOrderedList')}>1.</Tb>
+        <Tb title={t('Lista com marcadores')} onClick={() => exec('insertUnorderedList')}>•</Tb>
+        <Tb title={t('Lista numerada')} onClick={() => exec('insertOrderedList')}>1.</Tb>
         <span className="tb-sep" />
-        <Tb title="Inserir link" onClick={insertLink}>🔗</Tb>
-        <Tb title="Inserir imagem" onClick={() => void insertImage()}>🖼</Tb>
-        <Tb title="Limpar formatação" onClick={() => exec('removeFormat')}>⌫</Tb>
+        <Tb title={t('Inserir link')} onClick={insertLink}>🔗</Tb>
+        <Tb title={t('Inserir imagem')} onClick={() => void insertImage()}>🖼</Tb>
+        <Tb title={t('Limpar formatação')} onClick={() => exec('removeFormat')}>⌫</Tb>
       </div>
 
       {linkMode && (
@@ -210,18 +237,19 @@ export function RichTextEditor({
             }}
             placeholder="https://…"
           />
-          <button className="btn btn-primary" onClick={applyLink}>Aplicar</button>
-          <button className="btn btn-ghost" onClick={() => setLinkMode(false)}>Cancelar</button>
+          <button className="btn btn-primary" onClick={applyLink}>{t('Aplicar')}</button>
+          <button className="btn btn-ghost" onClick={() => setLinkMode(false)}>{t('Cancelar')}</button>
         </div>
       )}
 
-      {/* Ações da imagem selecionada — a edição de tamanho acontece no diálogo */}
+      {/* Ações da imagem selecionada — o tamanho se ajusta arrastando a alça */}
       {liveSelImg && (
         <div className="img-panel">
-          <span className="img-panel-title">Imagem selecionada</span>
-          <PanelBtn onClick={() => setImgDlgOpen(true)}>Tamanho da imagem…</PanelBtn>
-          <PanelBtn className="danger" onClick={removeImg}>Remover</PanelBtn>
-          <span className="img-panel-hint">Duplo clique na imagem também abre o ajuste de tamanho.</span>
+          <span className="img-panel-title">{t('Imagem selecionada')}</span>
+          <span className="img-panel-hint">
+            {t('Arraste a alça do canto inferior direito para redimensionar.')}
+          </span>
+          <PanelBtn className="danger" onClick={removeImg}>{t('Remover')}</PanelBtn>
         </div>
       )}
 
@@ -234,7 +262,7 @@ export function RichTextEditor({
         data-placeholder={placeholder || ''}
         onInput={sync}
         onMouseDown={onEditorMouseDown}
-        onDoubleClick={onEditorDblClick}
+        onMouseMove={onEditorMouseMove}
         onDragStart={(e) => {
           // imagem não pode ser arrastada de lugar — evita o drag fantasma do browser
           if (e.target instanceof HTMLImageElement) e.preventDefault();
@@ -242,132 +270,55 @@ export function RichTextEditor({
         onBlur={sync}
       />
 
-      {imgDlgOpen && liveSelImg && (
-        <ImageSizeDialog
-          img={liveSelImg}
-          onApply={applyImgSize}
-          onRemove={removeImg}
-          onClose={() => setImgDlgOpen(false)}
-        />
+      {/* Alça de redimensionamento sobre o canto da imagem — fora do
+          contentEditable para não entrar no HTML; position:fixed acompanha
+          o rect da imagem e é recalculada em scroll/resize/reflows. */}
+      {liveSelImg && (
+        <ImgGrip img={liveSelImg} onGripDown={(e) => {
+          e.preventDefault();
+          startResize(liveSelImg, e);
+        }} />
       )}
     </div>
   );
 }
 
 /**
- * Diálogo "Tamanho da imagem" — pré-visualização ao vivo numa área com rolagem
- * própria, largura/altura independentes e cadeado de proporção. Nada é aplicado
- * à imagem real até clicar em Aplicar.
+ * Alça visual no canto inferior direito da imagem selecionada. Renderizada
+ * fora do contentEditable (não pode entrar no HTML) com position:fixed —
+ * a posição segue o bounding rect da imagem e é recalculada em scroll,
+ * resize e num tick leve (reflows de fonte/layout movem a imagem).
  */
-function ImageSizeDialog({
+function ImgGrip({
   img,
-  onApply,
-  onRemove,
-  onClose,
+  onGripDown,
 }: {
   img: HTMLImageElement;
-  onApply: (w: number, h: number) => void;
-  onRemove: () => void;
-  onClose: () => void;
+  onGripDown: (e: React.MouseEvent) => void;
 }) {
-  const natW = img.naturalWidth || Math.round(img.getBoundingClientRect().width) || 100;
-  const natH = img.naturalHeight || Math.round(img.getBoundingClientRect().height) || 100;
-  const ratio = natW / natH;
-  const cur = img.getBoundingClientRect();
-  const [w, setW] = useState(Math.max(8, Math.round(cur.width) || natW));
-  const [h, setH] = useState(Math.max(8, Math.round(cur.height) || natH));
-  const [lock, setLock] = useState(true);
-  const pct = Math.max(1, Math.round((w / natW) * 100));
-
-  const setWidth = (v: number) => {
-    const nv = Math.max(8, Math.round(v) || 8);
-    setW(nv);
-    if (lock) setH(Math.max(8, Math.round(nv / ratio)));
-  };
-  const setHeight = (v: number) => {
-    const nv = Math.max(8, Math.round(v) || 8);
-    setH(nv);
-    if (lock) setW(Math.max(8, Math.round(nv * ratio)));
-  };
-
+  const [pos, setPos] = useState({ left: -999, top: -999 });
+  useEffect(() => {
+    const place = () => {
+      const r = img.getBoundingClientRect();
+      setPos({ left: r.right - 8, top: r.bottom - 8 });
+    };
+    place();
+    window.addEventListener('scroll', place, true);
+    window.addEventListener('resize', place);
+    const tick = setInterval(place, 200);
+    return () => {
+      window.removeEventListener('scroll', place, true);
+      window.removeEventListener('resize', place);
+      clearInterval(tick);
+    };
+  }, [img]);
   return (
     <div
-      className="modal-overlay imgdlg-overlay"
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
-    >
-      <div className="imgdlg" role="dialog" aria-label="Tamanho da imagem">
-        <div className="imgdlg-head">
-          <h2>Tamanho da imagem</h2>
-          <button className="imgdlg-close" onClick={onClose} title="Fechar">✕</button>
-        </div>
-
-        <div className="imgdlg-preview">
-          {/* clone da imagem na prévia — o original só muda ao aplicar */}
-          <img src={img.src} alt="" draggable={false} style={{ width: w, height: h }} />
-        </div>
-
-        <div className="imgdlg-controls">
-          <label className="img-field">
-            Largura
-            <input
-              className="inp"
-              type="number"
-              min={8}
-              value={w}
-              onChange={(e) => setWidth(Number(e.target.value))}
-            />
-            px
-          </label>
-          <label className="img-field">
-            Altura
-            <input
-              className="inp"
-              type="number"
-              min={8}
-              value={h}
-              onChange={(e) => setHeight(Number(e.target.value))}
-            />
-            px
-          </label>
-          <label className="img-check">
-            <input type="checkbox" checked={lock} onChange={(e) => setLock(e.target.checked)} />
-            Manter proporção
-          </label>
-        </div>
-
-        <div className="imgdlg-controls" style={{ paddingTop: 0 }}>
-          <input
-            type="range"
-            className="imgdlg-range"
-            min={5}
-            max={400}
-            value={Math.min(400, pct)}
-            onChange={(e) => setWidth((natW * Number(e.target.value)) / 100)}
-            title="Escala em relação ao tamanho original"
-          />
-          <span className="imgdlg-info">
-            {pct}% do original ({natW} × {natH} px)
-          </span>
-        </div>
-
-        <div className="imgdlg-foot">
-          <button className="btn btn-ghost danger" onClick={onRemove}>Remover imagem</button>
-          <span style={{ flex: 1 }} />
-          <button className="btn" onClick={onClose}>Cancelar</button>
-          <button
-            className="btn btn-primary"
-            onClick={() => {
-              onApply(Math.max(8, w), Math.max(8, h));
-              onClose();
-            }}
-          >
-            Aplicar
-          </button>
-        </div>
-      </div>
-    </div>
+      className="rte-grip"
+      style={{ left: pos.left, top: pos.top }}
+      title={t('Arraste para redimensionar')}
+      onMouseDown={onGripDown}
+    />
   );
 }
 

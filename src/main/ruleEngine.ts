@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'crypto';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'fs';
 import { mkdir, open, readdir, readFile, writeFile } from 'fs/promises';
-import { dirname, join } from 'path';
+import { basename, dirname, join } from 'path';
 import { sourceManager } from './sourceManager';
 import { accountStore } from './accountStore';
 import { archiveRootForPst } from './paths';
@@ -10,6 +10,10 @@ import { dataDir } from './dataDir';
 import { log } from './logger';
 import { recordRecipients } from './contactHistory';
 import { scanEmailBuffer } from './antivirus';
+import { blockedSenders } from './blockedSenders';
+import { getHeader } from './mailHeaders';
+import { appLanguage } from './language';
+import { resolveFolderName, type FolderKind } from '../shared/folderNames';
 import type { AccountConfig, MailRule, SyncProgress, SyncResult } from '../shared/types';
 import { safeFsName } from '../shared/fsName';
 
@@ -98,11 +102,53 @@ function ruleDestDir(rule: MailRule): string {
 
 const DELIVERY_RULE_PREFIX = 'Entrega padrão — ';
 
-/** Pasta de quarentena dentro da base de entrega (como a "Quarentena" do AV). */
-const QUARANTINE_FOLDER = 'Itens infectados';
+/**
+ * Diretório físico de uma pasta padrão pelo TIPO dentro de uma raiz de
+ * pastas (base local ou arquivo sombra do PST): usa a pasta já existente
+ * em QUALQUER idioma — nunca cria "Junk Email" ao lado de "Lixo Eletrônico"
+ * nem renomeia o que já está no disco. Só cria com o nome do idioma atual
+ * quando nenhuma variante existe.
+ */
+function kindDirInRoot(rootDir: string, kind: FolderKind): string {
+  let names: string[] = [];
+  try {
+    names = readdirSync(rootDir, { withFileTypes: true })
+      .filter((d) => d.isDirectory())
+      .map((d) => d.name);
+  } catch {
+    // raiz ainda não existe — cria com o nome localizado
+  }
+  return join(rootDir, safeFsName(resolveFolderName(names, kind, appLanguage())));
+}
 
-/** Configurações → Geral → "Verificar vírus" (padrão: ligado). */
+/** Raiz de pastas de uma base (loja local = a própria; PST = arquivo sombra). */
+function storeFolderRoot(storePath: string): string {
+  return isLocalStorePath(storePath) ? storePath : archiveRootForPst(storePath);
+}
+
+/** Diretório resolvido de uma pasta padrão da base (lixo, saída, enviados…). */
+export function kindDirFor(storePath: string, kind: FolderKind): string {
+  return kindDirInRoot(storeFolderRoot(storePath), kind);
+}
+
+/** Nome físico resolvido da pasta padrão — para APIs que recebem o nome. */
+export function resolveStoreFolderName(storePath: string, kind: FolderKind): string {
+  let names: string[] = [];
+  try {
+    names = readdirSync(storeFolderRoot(storePath), { withFileTypes: true })
+      .filter((d) => d.isDirectory())
+      .map((d) => d.name);
+  } catch {
+    // raiz ainda não existe
+  }
+  return resolveFolderName(names, kind, appLanguage());
+}
+
+/** Configurações → Geral → "Verificar vírus" (padrão: ligado; desligado no Linux). */
 function virusScanEnabled(): boolean {
+  // No Linux não há inspeção de antivírus — o usuário optou por não rodar
+  // ClamAV/motor local; a filtragem de spam do servidor continua ativa.
+  if (process.platform === 'linux') return false;
   try {
     const p = join(dataDir(), 'settings.json');
     if (existsSync(p)) {
@@ -125,11 +171,13 @@ function virusScanEnabled(): boolean {
 const DEDUP_FILE = '_dedup.json';
 
 interface DedupIdx {
-  /** nome do .eml → chave (Message-ID/sha1) */
-  files: Map<string, string>;
+  /** nome do .eml → chaves (mid/fp/sha1 — mais de uma por arquivo) */
+  files: Map<string, string[]>;
   /** chave → nome do .eml (para validar arquivo que sumiu) */
   byKey: Map<string, string>;
   dirty: boolean;
+  /** Indexação em background de arquivos ainda não mapeados — importações aguardam. */
+  pending?: Promise<void>;
 }
 
 const dedupCache = new Map<string, Promise<DedupIdx>>();
@@ -175,15 +223,46 @@ function hashOf(buf: Buffer): string {
 }
 
 /**
- * Chave estável de dedupe: o Message-ID do cabeçalho, quando presente.
- * Mensagens migradas de PST têm bytes diferentes do raw POP3/IMAP, então o
- * hash do arquivo inteiro não basta — o Message-ID é o mesmo nas duas cópias.
- * Fallback: hash do conteúdo (mensagens sem Message-ID).
+ * Chaves-candidatas de um .eml para dedupe — a mensagem é considerada
+ * duplicada quando QUALQUER chave casa:
+ *  - `mid:<id>`    — Message-ID (estável em mensagens baixadas e no export
+ *                    de PST, que passa a carregar o id original);
+ *  - `fp:<sha1>`   — fingerprint de cabeçalhos estáveis (De/Para/Cc/Assunto/
+ *                    Data, com e-mails e encoded-words normalizados). Cobre
+ *                    .eml reconstruídos cujo Message-ID varia a cada export —
+ *                    ex.: bases já importadas por versões antigas — e cópias
+ *                    do mesmo e-mail vindas de protocolos/fontes diferentes;
+ *  - `sha1:<hash>` — último recurso, quando não há cabeçalho aproveitável.
  */
-function keyOf(buf: Buffer): string {
-  const head = buf.subarray(0, Math.min(buf.length, 16384)).toString('latin1');
-  const m = /^message-id:[ \t]*<?([^>\r\n]+)>?/im.exec(head);
-  return m ? `mid:${m[1].trim().toLowerCase()}` : `sha1:${hashOf(buf)}`;
+function keysOfHead(head: string, rawForHash?: Buffer): string[] {
+  const keys: string[] = [];
+  const mid = getHeader(head, 'Message-ID').replace(/[<>]/g, '').trim().toLowerCase();
+  if (mid) keys.push(`mid:${mid}`);
+  const canonText = (s: string) => s.toLowerCase().replace(/\s+/g, ' ').trim();
+  // Endereços: só os e-mails contam — "Nome <a@b>", "<a@b>" e "a@b" são iguais.
+  const canonAddr = (s: string) => {
+    const addrs = s.toLowerCase().match(/[\w.+-]+@[\w-]+(?:\.[\w-]+)+/g);
+    return addrs ? addrs.sort().join(',') : canonText(s);
+  };
+  const dateRaw = getHeader(head, 'Date');
+  const t = Date.parse(dateRaw);
+  const date = isNaN(t) ? canonText(dateRaw) : new Date(t).toISOString();
+  const fields = [
+    canonAddr(getHeader(head, 'From')),
+    canonAddr(getHeader(head, 'To')),
+    canonAddr(getHeader(head, 'Cc')),
+    canonText(getHeader(head, 'Subject')),
+    date,
+  ];
+  if (fields.some((f) => f)) {
+    keys.push(`fp:${hashOf(Buffer.from(fields.join('|'), 'utf8'))}`);
+  }
+  if (!keys.length && rawForHash) keys.push(`sha1:${hashOf(rawForHash)}`);
+  return keys;
+}
+
+function keysOf(buf: Buffer): string[] {
+  return keysOfHead(buf.subarray(0, Math.min(buf.length, 32768)).toString('latin1'), buf);
 }
 
 /** Extrai cabeçalhos básicos do .eml baixado — substitui o TOP do POP3 quando
@@ -202,21 +281,42 @@ function headInfo(buf: Buffer): { from: string; to: string; subject: string; mes
   };
 }
 
-/** Lê só o cabeçalho do .eml para extrair o Message-ID; sem ele, hash do arquivo inteiro. */
-async function fileKey(fp: string): Promise<string | null> {
+/**
+ * Marcação de spam feita pelo servidor/provedor antes da entrega —
+ * SpamAssassin/cPanel (X-Spam-Flag/Status/Level), gateways com
+ * X-Spam-Detected e assunto reescrito ("*** SPAM *** …", "[SPAM] …").
+ * A mensagem vai para "Lixo eletrônico" da base, como o filtro de lixo do
+ * Outlook — antes das regras do usuário.
+ */
+function isSpamFlagged(raw: Buffer): boolean {
+  const head = raw.subarray(0, Math.min(raw.length, 16384)).toString('latin1');
+  const yes = (v: string) => /^yes\b/i.test(v.trim());
+  if (yes(getHeader(head, 'X-Spam-Flag'))) return true;
+  if (yes(getHeader(head, 'X-Spam-Status'))) return true;
+  if (yes(getHeader(head, 'X-Spam-Detected'))) return true;
+  const stars = (getHeader(head, 'X-Spam-Level').match(/\*/g) || []).length;
+  if (stars >= 5) return true;
+  const subj = getHeader(head, 'Subject').trim().toLowerCase();
+  return (
+    subj.startsWith('***spam***') ||
+    subj.startsWith('**spam**') ||
+    subj.startsWith('[spam]')
+  );
+}
+
+/** Chaves de um .eml em disco: cabeçalho basta para mid/fp; sha1 do arquivo inteiro só sem headers. */
+async function fileKeys(fp: string): Promise<string[] | null> {
   try {
     const fh = await open(fp, 'r');
     try {
-      const head = Buffer.alloc(16384);
-      const { bytesRead } = await fh.read(head, 0, 16384, 0);
-      const m = /^message-id:[ \t]*<?([^>\r\n]+)>?/im.exec(
-        head.subarray(0, bytesRead).toString('latin1'),
-      );
-      if (m) return `mid:${m[1].trim().toLowerCase()}`;
+      const head = Buffer.alloc(32768);
+      const { bytesRead } = await fh.read(head, 0, 32768, 0);
+      const keys = keysOfHead(head.subarray(0, bytesRead).toString('latin1'));
+      if (keys.length) return keys;
     } finally {
       await fh.close();
     }
-    return `sha1:${hashOf(await readFile(fp))}`;
+    return [`sha1:${hashOf(await readFile(fp))}`];
   } catch {
     return null; // arquivo sumiu entre o readdir e a leitura
   }
@@ -238,12 +338,13 @@ function dirKeys(dir: string): Promise<DedupIdx> {
   let p = dedupCache.get(dir);
   if (!p) {
     p = (async () => {
-      const files = new Map<string, string>();
-      let stored: Record<string, string> = {};
+      const files = new Map<string, string[]>();
+      let stored: Record<string, string | string[]> = {};
       try {
         stored =
-          (JSON.parse(await readFile(join(dir, DEDUP_FILE), 'utf8')) as { files?: Record<string, string> })
-            .files || {};
+          (JSON.parse(await readFile(join(dir, DEDUP_FILE), 'utf8')) as {
+            files?: Record<string, string | string[]>;
+          }).files || {};
       } catch {
         // sem índice ainda — será montado agora e persistido
       }
@@ -253,8 +354,12 @@ function dirKeys(dir: string): Promise<DedupIdx> {
       } catch {
         // diretório ainda não existe — vazio
       }
-      // Reconcilia: índice só vale para arquivo que ainda existe no disco
-      for (const f of names) if (stored[f]) files.set(f, stored[f]);
+      // Reconcilia: índice só vale para arquivo que ainda existe no disco.
+      // Formato antigo (uma chave por arquivo) é promovido para lista.
+      for (const f of names) {
+        const v = stored[f];
+        if (v) files.set(f, Array.isArray(v) ? v : [v]);
+      }
       // Arquivos sem entrada no índice (importados, movidos manualmente, ou
       // pasta de uma instalação antiga sem _dedup.json) → indexados em
       // BACKGROUND. A entrega não pode esperar a varredura de dezenas de
@@ -264,25 +369,27 @@ function dirKeys(dir: string): Promise<DedupIdx> {
       const missing = names.filter((f) => !files.has(f));
       const idx: DedupIdx = {
         files,
-        byKey: new Map([...files].map(([f, k]) => [k, f])),
+        byKey: new Map(
+          [...files].flatMap(([f, ks]) => ks.map((k) => [k, f] as [string, string])),
+        ),
         dirty: missing.length > 0 || Object.keys(stored).length !== files.size,
       };
       if (missing.length > 0) {
         const build = async () => {
           for (let i = 0; i < missing.length; i += 64) {
             const slice = missing.slice(i, i + 64);
-            const batch = await Promise.all(slice.map((f) => fileKey(join(dir, f))));
+            const batch = await Promise.all(slice.map((f) => fileKeys(join(dir, f))));
             slice.forEach((f, j) => {
-              const k = batch[j];
-              if (k) {
-                files.set(f, k);
-                idx.byKey.set(k, f);
+              const ks = batch[j];
+              if (ks?.length) {
+                files.set(f, ks);
+                for (const k of ks) idx.byKey.set(k, f);
               }
             });
           }
           scheduleDedupSave(dir, idx);
         };
-        void build();
+        idx.pending = build();
       }
       return idx;
     })();
@@ -303,19 +410,78 @@ function dedupHas(idx: DedupIdx, dir: string, key: string): boolean {
 }
 
 /**
+ * A mensagem já existe na pasta `dir`? Checagem de dedupe usada pelas
+ * importações (PST/Thunderbird) antes de gravar — reimportar a mesma fonte
+ * (ou importar sobre uma base que já tem parte das mensagens) não duplica.
+ */
+export async function dedupContains(dir: string, raw: Buffer): Promise<boolean> {
+  try {
+    const idx = await dirKeys(dir);
+    // Importação não pode correr à frente da indexação: numa pasta sem
+    // _dedup.json (base criada por versão antiga ou montada manualmente) o
+    // índice ainda está sendo montado — responder agora daria falso negativo
+    // e a mensagem seria gravada duplicada. Ao contrário da entrega (que tem
+    // o conjunto de vistos em memória), aqui não há outra rede de segurança.
+    if (idx.pending) {
+      await idx.pending.catch(() => {});
+      idx.pending = undefined;
+    }
+    return keysOf(raw).some((k) => dedupHas(idx, dir, k));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Registra no índice de dedupe da pasta um .eml gravado por fora do
+ * writeEmlDedup (ex.: importItemEml das importações) — a mensagem passa a
+ * ser reconhecida em reimportações e por entregas futuras.
+ */
+export async function dedupNote(dir: string, fileName: string, raw: Buffer): Promise<void> {
+  try {
+    const idx = await dirKeys(dir);
+    if (idx.pending) {
+      await idx.pending.catch(() => {});
+      idx.pending = undefined;
+    }
+    const ks = keysOf(raw);
+    idx.files.set(fileName, ks);
+    for (const k of ks) idx.byKey.set(k, fileName);
+    scheduleDedupSave(dir, idx);
+  } catch {
+    // índice é best-effort — não pode atrapalhar a importação
+  }
+}
+
+/**
  * Grava o .eml em `dir` só se ainda não existir uma cópia idêntica lá.
  * Retorna true quando a mensagem está na pasta (já estava ou gravou agora),
  * false quando a gravação falhou.
+ * `accountEmail` carimba X-UM-Account no arquivo — prova qual conta recebeu
+ * a mensagem (o cabeçalho To não prova: BCC e listas ficam invisíveis). O
+ * "Executar regras" usa esse carimbo para o filtro por conta.
+ * A chave de dedupe é calculada no buffer ORIGINAL — o carimbo não muda a
+ * identidade da mensagem para fins de deduplicação.
  */
-async function writeEmlDedup(dir: string, fileName: string, buf: Buffer): Promise<boolean> {
+async function writeEmlDedup(
+  dir: string,
+  fileName: string,
+  buf: Buffer,
+  accountEmail?: string,
+): Promise<boolean> {
   try {
     const idx = await dirKeys(dir);
-    const k = keyOf(buf);
-    if (dedupHas(idx, dir, k)) return true; // já entregue — conta como sucesso
+    const ks = keysOf(buf);
+    // já entregue — conta como sucesso
+    if (ks.some((k) => dedupHas(idx, dir, k))) return true;
     await mkdir(dir, { recursive: true });
-    await writeFile(join(dir, fileName), buf);
-    idx.files.set(fileName, k);
-    idx.byKey.set(k, fileName);
+    const out =
+      accountEmail && /^[^\r\n]+$/.test(accountEmail)
+        ? Buffer.concat([Buffer.from(`X-UM-Account: ${accountEmail}\r\n`, 'latin1'), buf])
+        : buf;
+    await writeFile(join(dir, fileName), out);
+    idx.files.set(fileName, ks);
+    for (const k of ks) idx.byKey.set(k, fileName);
     scheduleDedupSave(dir, idx);
     return true;
   } catch {
@@ -565,9 +731,10 @@ export class RuleEngine {
           if (!targetOk) throw new Error('destino de regra inválido');
           const buf = await raw();
           const dir = ruleDestDir(rule);
-          // Dedupe: cópia (mesmo Message-ID) já presente na pasta → entregue
-          if (dedupHas(await dirKeys(dir), dir, keyOf(buf))) return 'delivered';
-          if (await writeEmlDedup(dir, `${Date.now()}-${randomUUID().slice(0, 8)}.eml`, buf)) {
+          // Dedupe: cópia (mesmo Message-ID/fingerprint) já presente → entregue
+          const ridx = await dirKeys(dir);
+          if (keysOf(buf).some((k) => dedupHas(ridx, dir, k))) return 'delivered';
+          if (await writeEmlDedup(dir, `${Date.now()}-${randomUUID().slice(0, 8)}.eml`, buf, account?.email)) {
             result.archived++;
             return 'delivered';
           }
@@ -619,18 +786,19 @@ export class RuleEngine {
           const raw = await getRaw();
           const av = await scanEmailBuffer(raw, `${uidTag}.eml`);
           if (av.status === 'infected') {
-            const qdir = join(dirname(dir), QUARANTINE_FOLDER);
+            const qdir = kindDirInRoot(dirname(dir), 'quarantine');
             const ok = await writeEmlDedup(
               qdir,
               `${Date.now()}-${uidTag}-virus-${randomUUID().slice(0, 8)}.eml`,
               raw,
+              account?.email,
             );
             if (ok) {
               result.archived++;
               result.infected = (result.infected ?? 0) + 1;
               log.info(
                 'antivirus',
-                `mensagem de "${env.from}" movida para "${QUARANTINE_FOLDER}"` +
+                `mensagem de "${env.from}" movida para "${basename(qdir)}"` +
                   (av.threat ? ` — ${av.threat}` : ''),
               );
             }
@@ -639,6 +807,34 @@ export class RuleEngine {
         } catch (e) {
           // Scanner falhou — a mensagem é entregue normalmente (não bloqueia email)
           log.error('antivirus: verificação falhou', e);
+        }
+      }
+      // Marcação de spam do servidor/provedor (SpamAssassin, cPanel, etc.)
+      // ou remetente na lista de bloqueados: vai direto para "Lixo
+      // eletrônico" da base — como o filtro de lixo do Outlook, sem passar
+      // por regras nem Caixa de Entrada.
+      if (dir) {
+        try {
+          const raw = await getRaw();
+          if (isSpamFlagged(raw) || blockedSenders.isBlocked(env.from)) {
+            const jdir = kindDirInRoot(dirname(dir), 'junk');
+            const ok = await writeEmlDedup(
+              jdir,
+              `${Date.now()}-${uidTag}-spam-${randomUUID().slice(0, 8)}.eml`,
+              raw,
+              account?.email,
+            );
+            if (ok) {
+              result.archived++;
+              result.junked = (result.junked ?? 0) + 1;
+              const why = blockedSenders.isBlocked(env.from) ? 'remetente bloqueado' : 'spam do servidor';
+              log.info('spam', `mensagem de "${env.from}" movida para "${basename(jdir)}" (${why})`);
+            }
+            return ok;
+          }
+        } catch (e) {
+          // Falha na leitura do flag — segue o fluxo normal (não perde a mensagem)
+          log.error('spam: verificação falhou', e);
         }
       }
       let st = await deliverByRules(getRaw, env, userRules);
@@ -660,6 +856,7 @@ export class RuleEngine {
           dir,
           `${Date.now()}-${uidTag}-${randomUUID().slice(0, 8)}.eml`,
           raw,
+          account?.email,
         );
         if (ok) {
           result.archived++;
@@ -747,7 +944,11 @@ export class RuleEngine {
       // base criada automaticamente. Sem destino, a mensagem fica no servidor.
       const popInboxDir = () => {
         const p = ensureDeliveryStore(account);
-        return p ? folderDirFor(p, account.deliveryFolder || 'Caixa de Entrada') : null;
+        return p
+          ? account.deliveryFolder
+            ? folderDirFor(p, account.deliveryFolder)
+            : kindDirFor(p, 'inbox')
+          : null;
       };
       // TOP só é necessário quando existe regra COM condições (avalia
       // assunto/remetente antes de baixar) ou para a trava por Message-ID.
@@ -1009,7 +1210,9 @@ export class RuleEngine {
           : '';
       const storePath = dp || defaultStorePath();
       return storePath
-        ? folderDirFor(storePath, account?.deliveryFolder || 'Caixa de Entrada')
+        ? account?.deliveryFolder
+          ? folderDirFor(storePath, account.deliveryFolder)
+          : kindDirFor(storePath, 'inbox')
         : null;
     };
 

@@ -3,6 +3,8 @@ import { Icon } from '../icons';
 import { ConfirmDialog } from './ConfirmDialog';
 import { RichTextEditor } from './RichTextEditor';
 import { guessServers, applyTheme } from '../utils';
+import { getLang, setLang, t, useLang } from '../i18n';
+import { folderName } from '../../../shared/folderNames';
 import type {
   AccountConfig,
   AccountDraft,
@@ -45,7 +47,7 @@ const EMPTY_DRAFT: AccountDraft = {
   password: '',
 };
 
-export type SettingsTab = 'email' | 'data' | 'rules' | 'sigs' | 'geral';
+export type SettingsTab = 'email' | 'data' | 'rules' | 'sigs' | 'lixo' | 'geral';
 
 function Field({
   label,
@@ -56,7 +58,7 @@ function Field({
 }) {
   return (
     <label className="fld">
-      <span>{label}</span>
+      <span>{t(label)}</span>
       {children}
     </label>
   );
@@ -74,6 +76,7 @@ export function AccountsSettings({
   editAccountId,
   initialAction,
 }: AccountsSettingsProps) {
+  useLang();
   const [accounts, setAccounts] = useState<AccountConfig[]>([]);
   const [draft, setDraft] = useState<AccountDraft>(EMPTY_DRAFT);
   const [editing, setEditing] = useState(false);
@@ -104,25 +107,29 @@ export function AccountsSettings({
     setImp(null);
   };
   const [rules, setRules] = useState<MailRule[]>([]);
-  // "Executar regras agora" — escolhe a conta, as regras e a pasta a varrer
+  // "Executar regras" — escolhe a REGRA e a pasta a varrer (em qualquer base
+  // aberta). Verifica cada mensagem da pasta e move as que combinam.
+  const [runRuleId, setRunRuleId] = useState('');
+  const [runStore, setRunStore] = useState('');
   const [runFolder, setRunFolder] = useState('');
   const [runFolders, setRunFolders] = useState<Array<{ id: string; label: string }>>([]);
-  const [runAccount, setRunAccount] = useState('');
-  const [runRuleIds, setRunRuleIds] = useState<string[]>([]);
   const [runMsg, setRunMsg] = useState('');
   const [runBusy, setRunBusy] = useState(false);
+  const [runProg, setRunProg] = useState<{ done: number; total: number; applied: number } | null>(null);
   const [showRun, setShowRun] = useState(false);
-  /** Regras de uma conta (inclui as "todas as contas") — uma conta por vez, para não pesar. */
-  const runAccountRules = rules.filter((r) => r.accountId === runAccount || r.accountId === 'all');
-  useEffect(() => {
-    if (!runAccount && accounts.length) setRunAccount(accounts[0].id);
-  }, [runAccount, accounts]);
-  // Ao trocar de conta, vêm marcadas as regras habilitadas dela; o usuário pode
-  // marcar outras (inclusive desativadas) — execução manual, como no Outlook.
-  useEffect(() => {
-    setRunRuleIds(rules.filter((r) => r.enabled && (r.accountId === runAccount || r.accountId === 'all')).map((r) => r.id));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [runAccount, rules]);
+  useEffect(() => window.outlook.onRulesProgress?.(setRunProg), []);
+  /** Regras do usuário — a execução manual não lista as automáticas de
+   *  entrega (elas só roteiam o recebimento novo). */
+  const runnableRules = rules.filter((r) => !r.name?.startsWith('Entrega padrão'));
+  const runRuleObj = runnableRules.find((r) => r.id === runRuleId);
+  // Pega-tudo de verdade: sem condições E sem conta vinculada — só esse caso
+  // move a pasta inteira. Regra com conta limita às mensagens da conta.
+  const runRuleCatchAll =
+    !!runRuleObj &&
+    (!runRuleObj.accountId || runRuleObj.accountId === 'all') &&
+    !runRuleObj.conditions?.fromContains?.trim() &&
+    !runRuleObj.conditions?.toContains?.trim() &&
+    !runRuleObj.conditions?.subjectContains?.trim();
   /** Assinaturas do Outlook encontradas na importação — o usuário decide criar ou não. */
   const [importedSigs, setImportedSigs] = useState<Array<{ name: string; html: string }>>([]);
   // Importação conta a conta — modal com as opções antes de criar a conta.
@@ -145,14 +152,9 @@ export function AccountsSettings({
   const [acctNewDataName, setAcctNewDataName] = useState('');
   const [defaultStore, setDefaultStore] = useState('');
   const runSources = sources.filter((s) => s.kind === 'local' || s.kind === 'pst');
-  // A conta define o arquivo de dados: o da entrega dela, senão o principal.
-  const runAccountObj = accounts.find((a) => a.id === runAccount);
-  const runDeliverySrc = runAccountObj?.deliveryPath
-    ? runSources.find((s) => s.filePath === runAccountObj.deliveryPath)
-    : undefined;
-  const runSrcObj = runDeliverySrc || runSources.find((s) => s.filePath === defaultStore) || runSources[0];
-  const runSource = runSrcObj?.id || '';
-  // Só carrega a árvore quando o diálogo "Executar regras agora" está aberto.
+  // A pasta a varrer é livre — qualquer base aberta. Padrão: a principal.
+  const runSource = runStore || runSources.find((s) => s.filePath === defaultStore)?.id || runSources[0]?.id || '';
+  // Só carrega a árvore quando o diálogo "Executar regras" está aberto.
   useEffect(() => {
     if (!showRun || !runSource) return;
     window.outlook
@@ -174,22 +176,43 @@ export function AccountsSettings({
       .catch(() => setRunFolders([]));
   }, [runSource, showRun]);
   const runNow = async () => {
-    if (!runSource || !runFolder) return;
-    if (runRuleIds.length === 0) {
-      setRunMsg('Marque ao menos uma regra para executar.');
+    if (!runSource || !runFolder || !runRuleId) return;
+    // Regra sem condições combina com TODAS as mensagens — confirma antes de
+    // esvaziar a pasta por engano.
+    if (runRuleCatchAll && runRuleObj) {
+      setConfirm({
+        title: t('Regra sem condições'),
+        message: t('A regra "{name}" não tem condições — combina com TODAS as mensagens da pasta escolhida e todas serão movidas para "{dest}". Deseja continuar?', { name: runRuleObj.name || t('(sem nome)'), dest: `${pstLabel(runRuleObj.targetPstPath)} › ${runRuleObj.targetFolder}` }),
+        confirmLabel: t('Executar assim mesmo'),
+        danger: true,
+        onOk: () => {
+          setConfirm(null);
+          void doRunNow();
+        },
+      });
       return;
     }
+    await doRunNow();
+  };
+  const doRunNow = async () => {
     setRunBusy(true);
     setRunMsg('');
+    setRunProg(null);
     try {
-      const r = await window.outlook.applyRulesToFolder(runSource, runFolder, runRuleIds);
+      const r = await window.outlook.applyRulesToFolder(runSource, runFolder, [runRuleId]);
+      const miss =
+        (r.targetMissing ?? 0) > 0
+          ? t(' ({n} não movidas — o arquivo de dados de destino da regra não está aberto)', { n: r.targetMissing ?? 0 })
+          : '';
       setRunMsg(
-        r.applied > 0
-          ? `${r.applied} mensagem(ns) combinaram com as regras e foram movidas.`
-          : 'Nenhuma mensagem da pasta combinou com as regras.',
+        r.cancelled
+          ? t('Verificação interrompida — {done} mensagens verificadas, {applied} movida(s).', { done: r.done ?? 0, applied: r.applied }) + miss
+          : r.applied > 0
+            ? t('{n} mensagem(ns) combinaram com a regra e foram movidas para o destino dela.', { n: r.applied }) + miss
+            : t('Nenhuma mensagem da pasta combinou com a regra.') + miss,
       );
     } catch (e) {
-      setRunMsg(`Erro ao executar: ${(e as Error).message}`);
+      setRunMsg(t('Erro ao executar: {msg}', { msg: (e as Error).message }));
     } finally {
       setRunBusy(false);
     }
@@ -212,6 +235,10 @@ export function AccountsSettings({
   const [avEngine, setAvEngine] = useState('');
   const [theme, setThemeState] = useState<'system' | 'light' | 'dark'>('system');
   const [geralSaved, setGeralSaved] = useState(false);
+  // Remetentes bloqueados — próximas mensagens caem direto no Lixo eletrônico.
+  const [blocked, setBlocked] = useState<string[]>([]);
+  const [blockedInput, setBlockedInput] = useState('');
+  const [langPref, setLangPref] = useState<'pt' | 'en'>(getLang());
   const [dataDirPath, setDataDirPath] = useState('');
   const [confirm, setConfirm] = useState<{
     title: string;
@@ -230,6 +257,7 @@ export function AccountsSettings({
     currentFolder: string;
     done: number;
     total: number;
+    skipped?: number;
   } | null>(null);
   const [migrateError, setMigrateError] = useState('');
   const [migrateDone, setMigrateDone] = useState<string | null>(null);
@@ -377,6 +405,8 @@ export function AccountsSettings({
     window.outlook.getDefaultStore?.().then((v) => setDefaultStore(v || ''));
     window.outlook.getTheme?.().then((t) => setThemeState(t || 'system'));
     window.outlook.getDataDir?.().then((v) => setDataDirPath(v || ''));
+    window.outlook.blockedList?.().then(setBlocked);
+    window.outlook.getLanguage?.().then((l) => setLangPref(l === 'en' ? 'en' : 'pt'));
   }, []);
 
   const pstSources = sources.filter((s) => s.kind === 'pst');
@@ -521,9 +551,9 @@ export function AccountsSettings({
   /** Assinaturas da importação viram sugestão na aba Assinaturas — nada é criado sozinho. */
   const collectSigs = (g: ImportedAccountGuess) => {
     const found: Array<{ name: string; html: string }> = [];
-    if (g.signatureHtml) found.push({ name: `Assinatura — ${g.email}`, html: g.signatureHtml });
+    if (g.signatureHtml) found.push({ name: t('Assinatura — {email}', { email: g.email }), html: g.signatureHtml });
     if (g.signatureReplyHtml && g.signatureReplyHtml !== g.signatureHtml)
-      found.push({ name: `Resposta — ${g.email}`, html: g.signatureReplyHtml });
+      found.push({ name: t('Resposta — {email}', { email: g.email }), html: g.signatureReplyHtml });
     if (found.length) setImportedSigs((prev) => [...prev, ...found]);
   };
 
@@ -582,9 +612,9 @@ export function AccountsSettings({
       let deliveryPath = imp.path || undefined;
       if (imp.newData) {
         const src = await window.outlook.createLocalStoreAuto(
-          imp.newName.trim() || `Emails — ${imp.label}`,
+          imp.newName.trim() || t('Emails — {name}', { name: imp.label }),
         );
-        if (!src?.filePath) throw new Error('Não foi possível criar o arquivo de dados');
+        if (!src?.filePath) throw new Error(t('Não foi possível criar o arquivo de dados'));
         deliveryPath = src.filePath;
       }
       const saved = await window.outlook.upsertAccount({
@@ -632,12 +662,12 @@ export function AccountsSettings({
     });
     setTestMsg(
       (g.password
-        ? `Configuração e senha recuperadas automaticamente (${g.protocol.toUpperCase()}). Revise e clique em Salvar.`
-        : `Configuração importada (${g.protocol.toUpperCase()}). Digite a senha para concluir.`) +
+        ? t('Configuração e senha recuperadas automaticamente ({p}). Revise e clique em Salvar.', { p: g.protocol.toUpperCase() })
+        : t('Configuração importada ({p}). Digite a senha para concluir.', { p: g.protocol.toUpperCase() })) +
         (g.pstPath
           ? matchPath
-            ? ` Entrega vinculada à base "${pstLabel(matchPath)}".`
-            : ` O PST de entrega do Outlook (${g.pstPath.split(/[\\/]/).pop()}) não foi importado — importe-o na aba "Arquivos de Dados" ou escolha outro arquivo de dados na seção "Arquivo de dados" da conta.`
+            ? t(' Entrega vinculada à base "{label}".', { label: pstLabel(matchPath) })
+            : t(' O PST de entrega do Outlook ({file}) não foi importado — importe-o na aba "Arquivos de Dados" ou escolha outro arquivo de dados na seção "Arquivo de dados" da conta.', { file: g.pstPath.split(/[\\/]/).pop() ?? '' })
           : ''),
     );
     setAcctTab('conta');
@@ -697,7 +727,7 @@ export function AccountsSettings({
 
   const test = async () => {
     setBusy(true);
-    setTestMsg('Testando…');
+    setTestMsg(t('Testando…'));
     try {
       const res = await window.outlook.testAccount(draft);
       setTestMsg(res.ok ? `✓ ${res.message}` : `✗ ${res.message}`);
@@ -715,9 +745,9 @@ export function AccountsSettings({
       let toSave: AccountDraft = { ...draft, deliveryPath: draft.deliveryPath || undefined, deliveryFolder: undefined };
       if (acctNewData) {
         const src = await window.outlook.createLocalStoreAuto(
-          acctNewDataName.trim() || `Emails — ${draft.label || draft.email}`,
+          acctNewDataName.trim() || t('Emails — {name}', { name: draft.label || draft.email }),
         );
-        if (!src?.filePath) throw new Error('Não foi possível criar o arquivo de dados');
+        if (!src?.filePath) throw new Error(t('Não foi possível criar o arquivo de dados'));
         toSave = { ...toSave, deliveryPath: src.filePath };
       }
       const saved = await window.outlook.upsertAccount(toSave);
@@ -726,7 +756,7 @@ export function AccountsSettings({
       reloadAccounts();
       onAccountsChanged();
     } catch (e) {
-      setTestMsg(`Erro ao salvar: ${(e as Error).message}`);
+      setTestMsg(t('Erro ao salvar: {msg}', { msg: (e as Error).message }));
     } finally {
       setBusy(false);
     }
@@ -738,10 +768,10 @@ export function AccountsSettings({
     // .pst nunca é excluído: é o arquivo original do usuário).
     const boundLocal = uniqueSources.find((s) => s.kind === 'local' && s.filePath === acc?.deliveryPath);
     setConfirm({
-      title: 'Remover conta',
+      title: t('Remover conta'),
       message: boundLocal
-        ? `Remover a conta "${acc?.email || id}"? A base de dados vinculada "${boundLocal.label}" também será excluída — todas as mensagens nela serão apagadas do disco.`
-        : `Remover a conta "${acc?.email || id}"? ${acc?.deliveryPath ? 'A base de dados vinculada (PST) não é apagada.' : ''}`,
+        ? t('Remover a conta "{email}"? A base de dados vinculada "{label}" também será excluída — todas as mensagens nela serão apagadas do disco.', { email: acc?.email || id, label: boundLocal.label })
+        : t('Remover a conta "{email}"?{pst}', { email: acc?.email || id, pst: acc?.deliveryPath ? ' ' + t('A base de dados vinculada (PST) não é apagada.') : '' }),
       onOk: () => {
         setConfirm(null);
         void window.outlook.removeAccount(id, !!boundLocal).then(() => {
@@ -758,16 +788,16 @@ export function AccountsSettings({
   const resetSync = (id: string) => {
     const acc = accounts.find((a) => a.id === id);
     setConfirm({
-      title: 'Re-sincronizar do servidor',
+      title: t('Re-sincronizar do servidor'),
       message:
-        `Re-baixar todas as mensagens de "${acc?.email || id}" que ainda estiverem no servidor? ` +
-        'O que já está na base não duplica, mas a sincronização pode demorar se a caixa for grande.',
-      confirmLabel: 'Re-sincronizar',
+        t('Re-baixar todas as mensagens de "{email}" que ainda estiverem no servidor? ', { email: acc?.email || id }) +
+        t('O que já está na base não duplica, mas a sincronização pode demorar se a caixa for grande.'),
+      confirmLabel: t('Re-sincronizar'),
       danger: false,
       onOk: () => {
         setConfirm(null);
         void window.outlook.resetSyncState(id).then(() => {
-          setTestMsg('Sincronização reiniciada — use Enviar/Receber para baixar novamente.');
+          setTestMsg(t('Sincronização reiniciada — use Enviar/Receber para baixar novamente.'));
         });
       },
     });
@@ -775,8 +805,8 @@ export function AccountsSettings({
 
   const deleteStore = (s: MailSource) => {
     setConfirm({
-      title: 'Excluir base de dados',
-      message: `Excluir "${s.label}"? Todas as mensagens guardadas nela serão apagadas do disco — isso não pode ser desfeito.`,
+      title: t('Excluir base de dados'),
+      message: t('Excluir "{label}"? Todas as mensagens guardadas nela serão apagadas do disco — isso não pode ser desfeito.', { label: s.label }),
       onOk: () => {
         setConfirm(null);
         void window.outlook.deleteLocalStore(s.filePath!).then(() => onAccountsChanged());
@@ -801,22 +831,22 @@ export function AccountsSettings({
         src === 'outlook' ? await window.outlook.scanOutlookAccounts() : await window.outlook.scanThunderbirdAccounts();
       loadGuesses(found);
       const pwdNote = found.some((g) => g.password)
-        ? 'Senhas recuperadas onde estavam salvas no Windows.'
+        ? t('Senhas recuperadas onde estavam salvas no Windows.')
         : src === 'thunderbird'
-          ? 'O Thunderbird guarda as senhas cifradas: digite a senha ao usar os dados.'
-          : 'Digite a senha ao usar os dados.';
+          ? t('O Thunderbird guarda as senhas cifradas: digite a senha ao usar os dados.')
+          : t('Digite a senha ao usar os dados.');
       if (found.length) {
         // O resultado abre no assistente — nada é escrito na tela de fundo.
         setScanMsg('');
-        setWizNote(`${found.length} conta(s) encontrada(s) no ${name}. ${pwdNote}`);
+        setWizNote(t('{n} conta(s) encontrada(s) no {name}. {note}', { n: found.length, name, note: pwdNote }));
       } else {
         setWizNote('');
-        setScanMsg(`Nenhuma conta encontrada no ${name}.`);
+        setScanMsg(t('Nenhuma conta encontrada no {name}.', { name }));
       }
     } catch (e) {
       // Erro na busca: fecha o assistente e mostra a mensagem na tela de fundo
       setGuesses(null);
-      setScanMsg(`Erro: ${(e as Error).message}`);
+      setScanMsg(t('Erro: {msg}', { msg: (e as Error).message }));
     } finally {
       setWizScanning(false);
     }
@@ -825,7 +855,7 @@ export function AccountsSettings({
   const saveExport = async () => {
     if (!guesses) return;
     const path = await window.outlook.saveOutlookExport(guesses);
-    if (path) setWizNote(`Exportado para ${path}. Copie este arquivo para o Linux e use "Arquivo" lá.`);
+    if (path) setWizNote(t('Exportado para {path}. Copie este arquivo para o Linux e use "Arquivo" lá.', { path }));
   };
 
   const openExport = async () => {
@@ -834,10 +864,10 @@ export function AccountsSettings({
       if (found) {
         loadGuesses(found);
         setScanMsg('');
-        setWizNote(`${found.length} conta(s) carregada(s) do arquivo de exportação — digite a senha de cada uma ao importar.`);
+        setWizNote(t('{n} conta(s) carregada(s) do arquivo de exportação — digite a senha de cada uma ao importar.', { n: found.length }));
       }
     } catch (e) {
-      setScanMsg(`Erro: ${(e as Error).message}`);
+      setScanMsg(t('Erro: {msg}', { msg: (e as Error).message }));
     }
   };
 
@@ -848,7 +878,7 @@ export function AccountsSettings({
     enabled: true,
     conditions: {},
     targetPstPath: '',
-    targetFolder: 'Caixa de Entrada',
+    targetFolder: folderName('inbox', getLang()),
   };
 
   const saveRule = async () => {
@@ -860,7 +890,7 @@ export function AccountsSettings({
 
   const editRule = (r: MailRule) => {
     setCustomFolder(false);
-    setRuleDraft({ ...r, conditions: { ...r.conditions } });
+    setRuleDraft({ ...r, conditions: { ...(r.conditions || {}) } });
   };
 
   /** Duplica a regra como uma NOVA (sem id) e abre o editor — a conta fica
@@ -868,7 +898,7 @@ export function AccountsSettings({
   const duplicateRule = (r: MailRule) => {
     setCustomFolder(false);
     setRuleDraft({
-      name: `${r.name || 'Regra'} (cópia)`,
+      name: `${r.name || t('Regra')} ${t('(cópia)')}`,
       accountId: '',
       enabled: r.enabled,
       conditions: { ...r.conditions },
@@ -886,8 +916,8 @@ export function AccountsSettings({
   const removeRule = (id: string) => {
     const rule = rules.find((r) => r.id === id);
     setConfirm({
-      title: 'Excluir regra',
-      message: `Excluir a regra "${rule?.name || '(sem nome)'}"?`,
+      title: t('Excluir regra'),
+      message: t('Excluir a regra "{name}"?', { name: rule?.name || t('(sem nome)') }),
       onOk: () => {
         setConfirm(null);
         void window.outlook.removeRule(id).then(reloadRules);
@@ -896,7 +926,7 @@ export function AccountsSettings({
   };
 
   const accountLabel = (id: string) =>
-    id === 'all' ? 'Qualquer conta' : accounts.find((a) => a.id === id)?.email || id;
+    id === 'all' ? t('Qualquer conta') : accounts.find((a) => a.id === id)?.email || id;
   const dataFiles = uniqueSources.filter((s) => (s.kind === 'local' || s.kind === 'pst') && s.filePath);
   const accountMissing = (id: string) => id !== 'all' && !accounts.some((a) => a.id === id);
   const pstLabel = (p: string) => sources.find((s) => s.filePath === p)?.label || p.split(/[\\/]/).pop() || p;
@@ -908,7 +938,7 @@ export function AccountsSettings({
       setRenaming(null);
       onAccountsChanged(); // reabre lista de fontes com o novo label
     } catch (e) {
-      setScanMsg(`Erro ao renomear: ${(e as Error).message}`);
+      setScanMsg(t('Erro ao renomear: {msg}', { msg: (e as Error).message }));
     }
   };
 
@@ -917,6 +947,7 @@ export function AccountsSettings({
     data: 'archive',
     rules: 'filter',
     sigs: 'pen',
+    lixo: 'junk',
     geral: 'settings',
   };
 
@@ -928,10 +959,10 @@ export function AccountsSettings({
             <Icon name="settings" size={18} />
           </div>
           <div>
-            <h2>Configurações</h2>
-            <div className="sub">Contas, arquivos de dados, regras e preferências</div>
+            <h2>{t('Configurações')}</h2>
+            <div className="sub">{t('Contas, arquivos de dados, regras e preferências')}</div>
           </div>
-          <button className="set-close" onClick={onClose} title="Fechar">
+          <button className="set-close" onClick={onClose} title={t('Fechar')}>
             <Icon name="close" size={16} />
           </button>
         </div>
@@ -944,6 +975,7 @@ export function AccountsSettings({
               ['data', 'Arquivos de Dados'],
               ['rules', 'Regras e Alertas'],
               ['sigs', 'Assinaturas'],
+              ['lixo', 'Lixo eletrônico'],
               ['geral', 'Geral'],
             ] as Array<[SettingsTab, string]>
           ).map(([id, label]) => (
@@ -953,7 +985,7 @@ export function AccountsSettings({
               className={`set-tab${tab === id ? ' active' : ''}`}
             >
               <Icon name={tabIcons[id]} size={14} />
-              {label}
+              {t(label)}
             </button>
           ))}
         </div>
@@ -965,17 +997,18 @@ export function AccountsSettings({
         {tab === 'data' && (
         <>
         <section className="set-card fill">
-          <h3 className="set-card-title"><Icon name="archive" size={15} /> Arquivos de dados</h3>
+          <h3 className="set-card-title"><Icon name="archive" size={15} /> {t('Arquivos de dados')}</h3>
           <p className="set-hint">
-            Onde as mensagens são guardadas. Marque uma como <strong>Principal</strong> — mensagens
-            sem regra e contas sem base vinculada são entregues na Caixa de Entrada dela.
+            {t('Onde as mensagens são guardadas. Marque uma como')}{' '}
+            <strong>{t('Principal')}</strong> —{' '}
+            {t('mensagens sem regra e contas sem base vinculada são entregues na Caixa de Entrada dela.')}
           </p>
 
           {/* Lista de bases abertas — cartões (rola dentro do card) */}
           <div className="fill-scroll">
           {uniqueSources.length === 0 && (
             <div className="empty-state">
-              Nenhuma base aberta. Crie uma base local ou importe um .pst abaixo.
+              {t('Nenhuma base aberta. Crie uma base local ou importe um .pst abaixo.')}
             </div>
           )}
           {uniqueSources.map((s) => (
@@ -993,8 +1026,8 @@ export function AccountsSettings({
                     onChange={(e) => setRenaming({ path: s.filePath!, name: e.target.value })}
                     onKeyDown={(e) => e.key === 'Enter' && saveRename()}
                   />
-                  <button onClick={saveRename} className="btn btn-primary">Salvar</button>
-                  <button onClick={() => setRenaming(null)} className="btn">Cancelar</button>
+                  <button onClick={saveRename} className="btn btn-primary">{t('Salvar')}</button>
+                  <button onClick={() => setRenaming(null)} className="btn">{t('Cancelar')}</button>
                 </>
               ) : (
                 <>
@@ -1002,10 +1035,10 @@ export function AccountsSettings({
                     <span className="acct-name">
                       {s.label}
                       <span className={`badge ${s.kind === 'pst' ? 'badge-pst' : 'badge-local'}`}>
-                        {s.kind === 'pst' ? 'PST · somente leitura' : 'Base local'}
+                        {s.kind === 'pst' ? t('PST · somente leitura') : t('Base local')}
                       </span>
                       {defaultStore === s.filePath && (
-                        <span className="badge badge-main">Principal</span>
+                        <span className="badge badge-main">{t('Principal')}</span>
                       )}
                     </span>
                     <span className="acct-sub" title={s.filePath}>
@@ -1014,9 +1047,9 @@ export function AccountsSettings({
                         return (
                           <>
                             {bound ? (
-                              <span style={{ color: 'var(--blue)' }}>vinculada a {bound.email} · </span>
+                              <span style={{ color: 'var(--blue)' }}>{t('vinculada a {email}', { email: bound.email })} · </span>
                             ) : (
-                              <span style={{ color: 'var(--text-dim)' }}>sem conta vinculada · </span>
+                              <span style={{ color: 'var(--text-dim)' }}>{t('sem conta vinculada')} · </span>
                             )}
                             {s.filePath}
                           </>
@@ -1027,22 +1060,22 @@ export function AccountsSettings({
                   {defaultStore !== s.filePath && (
                     <button
                       className="btn"
-                      title="Tornar esta a base principal (destino padrão das mensagens)"
+                      title={t('Tornar esta a base principal (destino padrão das mensagens)')}
                       onClick={() => {
                         setDefaultStore(s.filePath!);
                         void window.outlook.setDefaultStore?.(s.filePath!);
                       }}
                     >
-                      Definir principal
+                      {t('Definir principal')}
                     </button>
                   )}
                   {s.kind === 'local' && (
                     <button
                       onClick={() => setRenaming({ path: s.filePath!, name: s.label })}
                       className="btn btn-ghost"
-                      title="Renomear a base de dados"
+                      title={t('Renomear a base de dados')}
                     >
-                      Renomear
+                      {t('Renomear')}
                     </button>
                   )}
                   {s.kind === 'pst' && (
@@ -1052,26 +1085,26 @@ export function AccountsSettings({
                         setMigrateSrc(s);
                       }}
                       className="btn btn-ghost"
-                      title="Copia todo o conteúdo do PST para uma base própria do app — lá, excluir apaga de verdade e libera espaço"
+                      title={t('Copia todo o conteúdo do PST para uma base própria do app — lá, excluir apaga de verdade e libera espaço')}
                     >
-                      Migrar…
+                      {t('Migrar…')}
                     </button>
                   )}
                   {s.kind === 'local' ? (
                     <button
                       onClick={() => deleteStore(s)}
                       className="btn btn-ghost danger"
-                      title="Apaga a pasta e todas as mensagens do disco — não pode ser desfeito"
+                      title={t('Apaga a pasta e todas as mensagens do disco — não pode ser desfeito')}
                     >
-                      Excluir
+                      {t('Excluir')}
                     </button>
                   ) : (
                     <button
                       onClick={() => onCloseSource(s.id)}
                       className="btn btn-ghost"
-                      title="Fecha o PST no app — o arquivo original nunca é apagado"
+                      title={t('Fecha o PST no app — o arquivo original nunca é apagado')}
                     >
-                      Fechar
+                      {t('Fechar')}
                     </button>
                   )}
                 </>
@@ -1081,47 +1114,49 @@ export function AccountsSettings({
           </div>
         </section>
 
-        <section className="set-card">
-          <h3 className="set-card-title"><Icon name="new" size={15} /> Adicionar arquivo de dados</h3>
+        {/* Ações e pasta de dados lado a lado — a listagem acima ganha
+            altura, que é o que importa quando há várias bases. */}
+        <div className="set-row">
+        <section className="set-card" style={{ flex: 1, minWidth: 0 }}>
+          <h3 className="set-card-title"><Icon name="new" size={15} /> {t('Adicionar arquivo de dados')}</h3>
           <p className="set-hint" style={{ marginTop: 0 }}>
-            Dois jeitos de adicionar dados ao app — os dois criam bases no formato próprio
-            do Unit Mail (pasta com mensagens .eml, portável para o Linux):
+            {t('Cria ou importa bases no formato próprio do app (arquivos originais nunca são alterados):')}
           </p>
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8 }}>
             <button
               className="btn btn-primary"
+              title={t('Cria uma base vazia — pode receber mensagens de várias contas na mesma Caixa de Entrada (use Regras para separar em pastas)')}
               onClick={() => {
                 setNewStoreName('');
                 setNewStoreAccount('');
                 setShowNewStore(true);
               }}
             >
-              <Icon name="new" size={14} /> Novo arquivo de dados…
+              <Icon name="new" size={14} /> {t('Nova base…')}
             </button>
-            <button className="btn" onClick={importPst}>
-              <Icon name="download" size={14} /> Importar arquivo .pst…
+            <button
+              className="btn"
+              title={t('Traz TODAS as pastas e mensagens do arquivo .pst do Outlook para a base que você escolher')}
+              onClick={importPst}
+            >
+              <Icon name="download" size={14} /> {t('Importar .pst…')}
             </button>
-            <button className="btn" onClick={importTb} disabled={tbBusy}>
-              <Icon name="download" size={14} /> {tbBusy ? 'Procurando perfis…' : 'Importar do Thunderbird…'}
+            <button
+              className="btn"
+              title={t('Traz todas as pastas e mensagens do perfil do Thunderbird instalado neste computador')}
+              onClick={importTb}
+              disabled={tbBusy}
+            >
+              <Icon name="download" size={14} /> {tbBusy ? t('Procurando…') : 'Thunderbird…'}
             </button>
           </div>
-          <p className="set-hint" style={{ marginTop: 8, marginBottom: 0 }}>
-            <strong>Novo arquivo de dados</strong> cria uma base vazia — pode receber mensagens de
-            várias contas na mesma Caixa de Entrada (use Regras para separar em pastas).{' '}
-            <strong>Importar .pst</strong> traz TUDO que estiver no arquivo do Outlook — todas as
-            pastas e mensagens — para a base que você escolher; o .pst original nunca é alterado.{' '}
-            <strong>Importar do Thunderbird</strong> traz todas as pastas e mensagens do perfil
-            instalado neste computador — o perfil original não é alterado.
-          </p>
         </section>
 
-        <section className="set-card">
-          <h3 className="set-card-title"><Icon name="folder" size={15} /> Pasta de dados</h3>
+        <section className="set-card" style={{ flex: 1, minWidth: 0 }}>
+          <h3 className="set-card-title"><Icon name="folder" size={15} /> {t('Pasta de dados')}</h3>
           <p className="set-hint">
-            Todos os seus dados ficam nesta pasta — contas, regras, assinaturas e as bases de
-            email dentro de <code>Mail/</code> (como o perfil do Thunderbird). Para mover para
-            outro computador, copie a pasta inteira e aponte o app para ela aqui: tudo volta a
-            funcionar sem recadastrar nada.
+            {t('Todos os seus dados ficam nesta pasta — contas, regras, assinaturas e as bases de email dentro de')} <code>Mail/</code>{' '}
+            {t('(como o perfil do Thunderbird). Para mover para outro computador, copie a pasta inteira e aponte o app para ela aqui: tudo volta a funcionar sem recadastrar nada.')}
           </p>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
             <input className="inp" style={{ flex: 1 }} readOnly value={dataDirPath} title={dataDirPath} />
@@ -1132,11 +1167,11 @@ export function AccountsSettings({
                 const res = await window.outlook.pickDataDirPath?.();
                 if (!res) return;
                 setConfirm({
-                  title: 'Alterar pasta de dados',
+                  title: t('Alterar pasta de dados'),
                   message: res.isProfile
-                    ? `"${res.dir}" já contém um perfil do Unit Mail — contas, regras e bases serão restaurados de lá. Confirmar?`
-                    : `Mover seus dados para "${res.dir}"? As bases locais serão copiadas para a subpasta Mail/ e as referências atualizadas.`,
-                  confirmLabel: 'Mover',
+                    ? t('"{dir}" já contém um perfil do Unit Mail — contas, regras e bases serão restaurados de lá. Confirmar?', { dir: res.dir })
+                    : t('Mover seus dados para "{dir}"? As bases locais serão copiadas para a subpasta Mail/ e as referências atualizadas.', { dir: res.dir }),
+                  confirmLabel: t('Mover'),
                   danger: false,
                   onOk: () => {
                     setConfirm(null);
@@ -1149,9 +1184,9 @@ export function AccountsSettings({
                         return;
                       }
                       setConfirm({
-                        title: 'Pasta de dados alterada',
-                        message: 'Dados copiados. Reinicie o app para concluir.',
-                        confirmLabel: 'Reiniciar',
+                        title: t('Pasta de dados alterada'),
+                        message: t('Dados copiados. Reinicie o app para concluir.'),
+                        confirmLabel: t('Reiniciar'),
                         danger: false,
                         onOk: () => void window.outlook.restartApp?.(),
                       });
@@ -1160,17 +1195,18 @@ export function AccountsSettings({
                 });
               }}
             >
-              Alterar pasta…
+              {t('Alterar pasta…')}
             </button>
             <button
               className="btn btn-ghost"
-              title="Abrir a pasta de dados no explorador"
+              title={t('Abrir a pasta de dados no explorador')}
               onClick={() => void window.outlook.openDataDir()}
             >
-              Abrir
+              {t('Abrir')}
             </button>
           </div>
         </section>
+        </div>
         </>
         )}
 
@@ -1179,58 +1215,57 @@ export function AccountsSettings({
         <>
         <section className="set-card fill">
           <div className="set-card-head">
-            <h3 className="set-card-title"><Icon name="envelope" size={15} /> Contas de email</h3>
+            <h3 className="set-card-title"><Icon name="envelope" size={15} /> {t('Contas de email')}</h3>
             <div className="acct-toolbar">
+              <span className="set-hint" style={{ margin: 0, alignSelf: 'center' }}>{t('Importar contas de:')}</span>
               {importAvailable && (
                 <button
                   className="btn btn-primary btn-sm"
-                  title="Procurar contas do Outlook instalado no Windows"
+                  title={t('Procurar contas do Outlook instalado no Windows')}
                   onClick={() => scanAccounts('outlook')}
                 >
-                  <Icon name="search" size={14} /> Outlook
+                  <Icon name="search" size={14} /> Outlook…
                 </button>
               )}
               <button
                 className="btn btn-primary btn-sm"
-                title="Procurar contas nos perfis do Thunderbird"
+                title={t('Procurar contas nos perfis do Thunderbird')}
                 onClick={() => scanAccounts('thunderbird')}
               >
-                <Icon name="mail" size={14} /> Thunderbird
+                <Icon name="mail" size={14} /> Thunderbird…
               </button>
               <button
                 className="btn btn-primary btn-sm"
-                title="Importar arquivo de exportação de contas (.json)"
+                title={t('Importar arquivo de exportação de contas (.json)')}
                 onClick={openExport}
               >
-                <Icon name="download" size={14} /> Arquivo
+                <Icon name="download" size={14} /> {t('Arquivo .json…')}
               </button>
             </div>
           </div>
           {scanMsg && <div className="scan-msg">{scanMsg}</div>}
-          <p className="set-hint">Recebimento por POP3 ou IMAP; envio por SMTP — igual ao Outlook.</p>
+          <p className="set-hint">{t('Recebimento por POP3 ou IMAP; envio por SMTP — igual ao Outlook.')}</p>
           {!secureStore && (
             <div className="set-warning" role="alert">
-              O sistema não oferece armazenamento seguro de senhas (keyring indisponível).
-              As senhas das contas ficam sem criptografia no arquivo de dados. Instale e
-              ative um cofre de senhas (GNOME Keyring ou KWallet) e recadastre as contas.
+              {t('O sistema não oferece armazenamento seguro de senhas (keyring indisponível). As senhas das contas ficam sem criptografia no arquivo de dados. Instale e ative um cofre de senhas (GNOME Keyring ou KWallet) e recadastre as contas.')}
             </div>
           )}
           {accounts.length === 0 && (
-            <div className="empty-state">Nenhuma conta cadastrada. Clique em "Adicionar conta" para começar.</div>
+            <div className="empty-state">{t('Nenhuma conta cadastrada. Clique em "Adicionar conta" para começar.')}</div>
           )}
           {accounts.length > 0 && (
             <div className="acct-table fill-scroll" role="table">
               <div className="acct-row acct-head" role="row">
-                <span role="columnheader">Conta</span>
-                <span role="columnheader">Recebimento</span>
-                <span role="columnheader">Entrega</span>
-                <span role="columnheader">Situação</span>
+                <span role="columnheader">{t('Conta')}</span>
+                <span role="columnheader">{t('Recebimento')}</span>
+                <span role="columnheader">{t('Entrega')}</span>
+                <span role="columnheader">{t('Situação')}</span>
                 <span role="columnheader" />
               </div>
               {accounts.map((a) => {
                 const src = sources.find((s) => s.id === `acct:${a.id}`);
                 const state = src?.connecting ? 'wait' : src?.error ? 'err' : 'ok';
-                const stateLabel = src?.connecting ? 'Conectando…' : src?.error ? 'Erro de conexão' : 'Pronta';
+                const stateLabel = src?.connecting ? t('Conectando…') : src?.error ? t('Erro de conexão') : t('Pronta');
                 return (
                   <div key={a.id} className="acct-row" role="row">
                     <div className="acct-cell acct-who" role="cell">
@@ -1254,11 +1289,11 @@ export function AccountsSettings({
                           nome, e "(principal)" indica a padrão. */}
                       {(() => {
                         const eff = a.deliveryPath || defaultStore;
-                        if (!eff) return <span className="acct-sub">Base padrão</span>;
+                        if (!eff) return <span className="acct-sub">{t('Base padrão')}</span>;
                         return (
                           <span className="acct-sub acct-strong" title={eff}>
                             {pstLabel(eff)}
-                            {eff === defaultStore ? ' (principal)' : ''}
+                            {eff === defaultStore ? ` ${t('(principal)')}` : ''}
                           </span>
                         );
                       })()}
@@ -1270,15 +1305,15 @@ export function AccountsSettings({
                       </span>
                     </div>
                     <div className="acct-cell acct-actions" role="cell">
-                      <button onClick={() => startEdit(a)} className="btn">Editar</button>
+                      <button onClick={() => startEdit(a)} className="btn">{t('Editar')}</button>
                       <button
                         onClick={() => resetSync(a.id)}
                         className="btn"
-                        title="Esquece o que já foi baixado e re-sincroniza tudo do servidor"
+                        title={t('Esquece o que já foi baixado e re-sincroniza tudo do servidor')}
                       >
-                        Re-sincronizar
+                        {t('Re-sincronizar')}
                       </button>
-                      <button onClick={() => remove(a.id)} className="btn btn-ghost danger">Remover</button>
+                      <button onClick={() => remove(a.id)} className="btn btn-ghost danger">{t('Remover')}</button>
                     </div>
                   </div>
                 );
@@ -1286,24 +1321,30 @@ export function AccountsSettings({
             </div>
           )}
           <button className="btn btn-primary" style={{ marginTop: 4 }} onClick={startNew}>
-            <Icon name="new" size={14} /> Adicionar conta de email
+            <Icon name="new" size={14} /> {t('Adicionar conta de email')}
           </button>
 
           {editing && (
-            <div className="modal-overlay" style={{ zIndex: 140 }} onMouseDown={(e) => e.target === e.currentTarget && setEditing(false)}>
+            <div className="set-overlay" style={{ zIndex: 140 }} onMouseDown={(e) => e.target === e.currentTarget && setEditing(false)}>
               <div
-                className="set-card acct-modal"
-                style={{ display: 'flex', flexDirection: 'column', gap: 12 }}
+                className="set-window acct-window"
                 onClick={(e) => e.stopPropagation()}
               >
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                <strong style={{ fontSize: 14 }}>
-                  {draft.id ? `Editar conta — ${draft.email || ''}` : 'Nova conta de email'}
-                </strong>
-                <button className="set-close" onClick={() => setEditing(false)} title="Fechar">
+              <div className="set-head">
+                <div className="set-head-icon"><Icon name="envelope" size={18} /></div>
+                <div>
+                  <h2>{draft.id ? t('Editar conta') : t('Nova conta de email')}</h2>
+                  <div className="sub">
+                    {draft.id
+                      ? draft.email || ''
+                      : t('Recebimento por POP3 ou IMAP; envio por SMTP')}
+                  </div>
+                </div>
+                <button className="set-close" onClick={() => setEditing(false)} title={t('Fechar')}>
                   <Icon name="close" size={15} />
                 </button>
               </div>
+              <div className="set-body acct-body">
               {/* Abas do formulário de conta — divide a tela em partes menores */}
               <div className="set-tabs" style={{ marginBottom: -2 }}>
                 {(
@@ -1317,14 +1358,14 @@ export function AccountsSettings({
                     onClick={() => setAcctTab(id)}
                     className={`set-tab${acctTab === id ? ' active' : ''}`}
                   >
-                    {label}
+                    {t(label)}
                   </button>
                 ))}
               </div>
 
               {acctTab === 'conta' && (
               <>
-              <div className="grp-title">Informações do usuário</div>
+              <div className="grp-title">{t('Informações do usuário')}</div>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
                 <Field label="Nome de exibição">
                   <input className="inp" value={draft.label} onChange={(e) => setDraft({ ...draft, label: e.target.value })} />
@@ -1354,39 +1395,38 @@ export function AccountsSettings({
                   </select>
                 </Field>
               </div>
-              <div className="grp-title">Logon</div>
+              <div className="grp-title">{t('Logon')}</div>
               <Field label="Senha (armazenada criptografada localmente)">
                 <input
                   type="password"
                   className="inp"
                   value={draft.password}
-                  placeholder={draft.id && draft.hasPassword ? '•••••••• (senha salva)' : draft.id ? '(deixe em branco para manter a atual)' : ''}
+                  placeholder={draft.id && draft.hasPassword ? t('•••••••• (senha salva)') : draft.id ? t('(deixe em branco para manter a atual)') : ''}
                   onChange={(e) => setDraft({ ...draft, password: e.target.value })}
                 />
                 {draft.id && draft.hasPassword && (
                   <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>
-                    ✓ Senha salva — preencha apenas se quiser trocar.
+                    {t('✓ Senha salva — preencha apenas se quiser trocar.')}
                   </span>
                 )}
               </Field>
-              <div className="grp-title">Arquivo de dados</div>
+              <div className="grp-title">{t('Arquivo de dados')}</div>
               <p className="set-hint" style={{ margin: 0 }}>
-                Onde as mensagens desta conta são guardadas. Você pode usar um arquivo que já existe
-                ou criar um novo só para esta conta.
+                {t('Onde as mensagens desta conta são guardadas. Você pode usar um arquivo que já existe ou criar um novo só para esta conta.')}
               </p>
               <div className="acct-data-choice" role="radiogroup">
                 <label className={`acct-data-opt${!acctNewData ? ' on' : ''}`}>
                   <input type="radio" checked={!acctNewData} onChange={() => setAcctNewData(false)} />
                   <span>
-                    <strong>Usar um arquivo de dados existente</strong>
-                    <em>Sem escolha, a conta usa o arquivo principal. Entrega na Caixa de Entrada.</em>
+                    <strong>{t('Usar um arquivo de dados existente')}</strong>
+                    <em>{t('Sem escolha, a conta usa o arquivo principal. Entrega na Caixa de Entrada.')}</em>
                   </span>
                 </label>
                 <label className={`acct-data-opt${acctNewData ? ' on' : ''}`}>
                   <input type="radio" checked={acctNewData} onChange={() => setAcctNewData(true)} />
                   <span>
-                    <strong>Criar um novo arquivo de dados</strong>
-                    <em>Cria uma base própria ao salvar. Se for o primeiro, vira o principal.</em>
+                    <strong>{t('Criar um novo arquivo de dados')}</strong>
+                    <em>{t('Cria uma base própria ao salvar. Se for o primeiro, vira o principal.')}</em>
                   </span>
                 </label>
               </div>
@@ -1398,11 +1438,11 @@ export function AccountsSettings({
                     disabled={dataFiles.length === 0}
                     onChange={(e) => setDraft({ ...draft, deliveryPath: e.target.value || undefined })}
                   >
-                    {dataFiles.length === 0 && <option value="">Nenhum arquivo de dados aberto</option>}
+                    {dataFiles.length === 0 && <option value="">{t('Nenhum arquivo de dados aberto')}</option>}
                     {dataFiles.map((s) => (
                       <option key={s.id} value={s.filePath}>
                         {s.label}
-                        {defaultStore === s.filePath ? ' (principal)' : ''}
+                        {defaultStore === s.filePath ? ` ${t('(principal)')}` : ''}
                       </option>
                     ))}
                   </select>
@@ -1412,7 +1452,7 @@ export function AccountsSettings({
                   <input
                     className="inp"
                     value={acctNewDataName}
-                    placeholder={`Emails — ${draft.label || draft.email || 'conta'}`}
+                    placeholder={t('Emails — {name}', { name: draft.label || draft.email || t('conta') })}
                     onChange={(e) => setAcctNewDataName(e.target.value)}
                   />
                 </Field>
@@ -1422,9 +1462,9 @@ export function AccountsSettings({
 
               {acctTab === 'servidores' && (
               <>
-              <div className="grp-title">Servidor de entrada — {draft.protocol.toUpperCase()}</div>
+              <div className="grp-title">{t('Servidor de entrada')} — {draft.protocol.toUpperCase()}</div>
               <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr', gap: 10 }}>
-                <Field label={`Servidor ${draft.protocol.toUpperCase()} (recebimento)`}>
+                <Field label={t('Servidor {p} (recebimento)', { p: draft.protocol.toUpperCase() })}>
                   <input className="inp" value={draft.imapHost} onChange={(e) => setDraft({ ...draft, imapHost: e.target.value })} />
                 </Field>
                 <Field label="Porta">
@@ -1451,11 +1491,11 @@ export function AccountsSettings({
                     }
                   >
                     <option value="1">SSL/TLS</option>
-                    <option value="0">Nenhum</option>
+                    <option value="0">{t('Nenhum')}</option>
                   </select>
                 </Field>
               </div>
-              <div className="grp-title">Servidor de saída — SMTP</div>
+              <div className="grp-title">{t('Servidor de saída')} — SMTP</div>
               <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr', gap: 10 }}>
                 <Field label="Servidor SMTP (envio)">
                   <input className="inp" value={draft.smtpHost} onChange={(e) => setDraft({ ...draft, smtpHost: e.target.value })} />
@@ -1475,13 +1515,13 @@ export function AccountsSettings({
                     onChange={(e) => setDraft({ ...draft, smtpSecure: e.target.value === '1' })}
                   >
                     <option value="1">SSL/TLS</option>
-                    <option value="0">STARTTLS/Nenhum</option>
+                    <option value="0">STARTTLS/{t('Nenhum')}</option>
                   </select>
                 </Field>
               </div>
               {draft.protocol === 'pop3' && (
                 <>
-                  <div className="grp-title">Entrega no servidor</div>
+                  <div className="grp-title">{t('Entrega no servidor')}</div>
                   <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, padding: '8px 10px', background: 'var(--surface-alt)', borderRadius: 3 }}>
                     <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, cursor: 'pointer' }}>
                       <input
@@ -1489,7 +1529,7 @@ export function AccountsSettings({
                         checked={draft.leaveOnServer ?? true}
                         onChange={(e) => setDraft({ ...draft, leaveOnServer: e.target.checked })}
                       />
-                      Deixar uma cópia das mensagens no servidor
+                      {t('Deixar uma cópia das mensagens no servidor')}
                     </label>
                     <Field label="Remover do servidor após (dias — 0 = nunca)">
                       <input
@@ -1508,15 +1548,16 @@ export function AccountsSettings({
               )}
 
               {testMsg && <div style={{ fontSize: 12 }}>{testMsg}</div>}
-              <div style={{ display: 'flex', gap: 8 }}>
+              </div>
+              <div className="acct-foot">
                 <button disabled={busy} onClick={test} className="btn">
-                  Testar conexão
+                  {t('Testar conexão')}
                 </button>
                 <button disabled={busy} onClick={save} className="btn btn-primary">
-                  Salvar
+                  {t('Salvar')}
                 </button>
                 <button disabled={busy} onClick={() => setEditing(false)} className="btn">
-                  Cancelar
+                  {t('Cancelar')}
                 </button>
               </div>
               </div>
@@ -1532,13 +1573,13 @@ export function AccountsSettings({
                 <div className="set-head">
                   <div className="set-head-icon"><Icon name="envelope" size={18} /></div>
                   <div>
-                    <h2>Importar conta</h2>
+                    <h2>{t('Importar conta')}</h2>
                     <div className="sub">
                       {wizStep === 'choose'
                         ? wizScanning
-                          ? 'Etapa 1 de 2 — procurando contas…'
-                          : `Etapa 1 de 2 — escolha a conta (${guesses.length} encontrada(s))`
-                        : `Etapa 2 de 2 — ${imp?.g.email || ''}`}
+                          ? t('Etapa 1 de 2 — procurando contas…')
+                          : t('Etapa 1 de 2 — escolha a conta ({n} encontrada(s))', { n: guesses.length })
+                        : t('Etapa 2 de 2 — {email}', { email: imp?.g.email || '' })}
                     </div>
                   </div>
                   <button className="set-close" onClick={() => !impBusy && setGuesses(null)}>
@@ -1549,8 +1590,8 @@ export function AccountsSettings({
                   {wizStep === 'choose' ? (
                     <>
                       <p className="set-hint" style={{ marginBottom: 4 }}>
-                        Escolha a conta que quer importar e clique em <strong>Próximo</strong>. Uma por
-                        vez — as demais ficam aqui para importar depois.
+                        {t('Escolha a conta que quer importar e clique em')} <strong>{t('Próximo')}</strong>.{' '}
+                        {t('Uma por vez — as demais ficam aqui para importar depois.')}
                       </p>
                       {wizNote && (
                         <p className="set-hint" style={{ marginBottom: 8 }}>{wizNote}</p>
@@ -1559,9 +1600,9 @@ export function AccountsSettings({
                         {wizScanning && (
                           <div className="guess-row" style={{ cursor: 'default' }}>
                             <span className="guess-main">
-                              <span className="guess-name">Procurando contas…</span>
+                              <span className="guess-name">{t('Procurando contas…')}</span>
                               <span className="guess-meta">
-                                Lendo o Registro do Windows / perfis — pode levar alguns segundos.
+                                {t('Lendo o Registro do Windows / perfis — pode levar alguns segundos.')}
                               </span>
                             </span>
                           </div>
@@ -1594,13 +1635,13 @@ export function AccountsSettings({
                                   {g.displayName}
                                   <span className="guess-email"> · {g.email}</span>
                                   {doneEmails.has(g.email.toLowerCase()) && (
-                                    <span className="badge badge-local">importada</span>
+                                    <span className="badge badge-local">{t('importada')}</span>
                                   )}
                                   {!doneEmails.has(g.email.toLowerCase()) && done && (
-                                    <span className="badge badge-off">já cadastrada</span>
+                                    <span className="badge badge-off">{t('já cadastrada')}</span>
                                   )}
                                   {g.password && !done && (
-                                    <span className="badge badge-local">senha recuperada</span>
+                                    <span className="badge badge-local">{t('senha recuperada')}</span>
                                   )}
                                 </span>
                                 <span className="guess-meta">
@@ -1612,7 +1653,7 @@ export function AccountsSettings({
                                   <span className="guess-chip">SMTP {g.smtpHost}:{g.smtpPort}</span>
                                   {g.pstPath && (
                                     <span className="guess-chip">
-                                      entrega em {g.pstPath.split(/[\\/]/).pop()}
+                                      {t('entrega em {file}', { file: g.pstPath.split(/[\\/]/).pop() ?? '' })}
                                     </span>
                                   )}
                                 </span>
@@ -1630,18 +1671,18 @@ export function AccountsSettings({
                             if (g) openImport(g);
                           }}
                         >
-                          Próximo →
+                          {t('Próximo →')}
                         </button>
                         <button className="btn" onClick={() => setGuesses(null)}>
-                          Cancelar
+                          {t('Cancelar')}
                         </button>
                         {importAvailable && (
                           <button
                             className="btn btn-ghost"
-                            title="Grava as contas encontradas num .json para levar ao Linux"
+                            title={t('Grava as contas encontradas num .json para levar ao Linux')}
                             onClick={saveExport}
                           >
-                            Salvar exportação para levar ao Linux
+                            {t('Salvar exportação para levar ao Linux')}
                           </button>
                         )}
                       </div>
@@ -1656,14 +1697,14 @@ export function AccountsSettings({
                           </span>
                           <span className="guess-chip">SMTP {imp.g.smtpHost}:{imp.g.smtpPort}</span>
                           {imp.g.imapUser && imp.g.imapUser.toLowerCase() !== imp.g.email.toLowerCase() && (
-                            <span className="guess-chip">usuário: {imp.g.imapUser}</span>
+                            <span className="guess-chip">{t('usuário: {u}', { u: imp.g.imapUser })}</span>
                           )}
                           {imp.g.smtpPassword && imp.g.smtpPassword !== imp.password && (
-                            <span className="guess-chip">senha de SMTP separada recuperada</span>
+                            <span className="guess-chip">{t('senha de SMTP separada recuperada')}</span>
                           )}
                           {imp.g.pstPath && (
                             <span className="guess-chip">
-                              entrega em {imp.g.pstPath.split(/[\\/]/).pop()}
+                              {t('entrega em {file}', { file: imp.g.pstPath.split(/[\\/]/).pop() ?? '' })}
                             </span>
                           )}
                         </div>
@@ -1679,30 +1720,30 @@ export function AccountsSettings({
                             className="inp"
                             type="password"
                             value={imp.password}
-                            placeholder={imp.g.password ? 'Senha recuperada do Windows' : 'Digite a senha da conta'}
+                            placeholder={imp.g.password ? t('Senha recuperada do Windows') : t('Digite a senha da conta')}
                             onChange={(e) => setImp({ ...imp, password: e.target.value })}
                           />
                         </Field>
                         {imp.g.password && (
                           <span className="guess-hint">
-                            A senha foi recuperada — revise ou troque, se necessário.
+                            {t('A senha foi recuperada — revise ou troque, se necessário.')}
                           </span>
                         )}
 
-                        <div className="grp-title" style={{ marginTop: 6 }}>Arquivo de dados</div>
+                        <div className="grp-title" style={{ marginTop: 6 }}>{t('Arquivo de dados')}</div>
                         <div className="acct-data-choice" role="radiogroup">
                           <label className={`acct-data-opt${!imp.newData ? ' on' : ''}`}>
                             <input type="radio" checked={!imp.newData} onChange={() => setImp({ ...imp, newData: false })} />
                             <span>
-                              <strong>Usar um arquivo de dados existente</strong>
-                              <em>As mensagens desta conta entram na Caixa de Entrada dele.</em>
+                              <strong>{t('Usar um arquivo de dados existente')}</strong>
+                              <em>{t('As mensagens desta conta entram na Caixa de Entrada dele.')}</em>
                             </span>
                           </label>
                           <label className={`acct-data-opt${imp.newData ? ' on' : ''}`}>
                             <input type="radio" checked={imp.newData} onChange={() => setImp({ ...imp, newData: true })} />
                             <span>
-                              <strong>Criar um novo arquivo de dados</strong>
-                              <em>Base própria só para esta conta.</em>
+                              <strong>{t('Criar um novo arquivo de dados')}</strong>
+                              <em>{t('Base própria só para esta conta.')}</em>
                             </span>
                           </label>
                         </div>
@@ -1714,10 +1755,10 @@ export function AccountsSettings({
                               disabled={dataFiles.length === 0}
                               onChange={(e) => setImp({ ...imp, path: e.target.value })}
                             >
-                              {dataFiles.length === 0 && <option value="">Nenhum arquivo de dados aberto</option>}
+                              {dataFiles.length === 0 && <option value="">{t('Nenhum arquivo de dados aberto')}</option>}
                               {dataFiles.map((s) => (
                                 <option key={s.id} value={s.filePath}>
-                                  {s.label}{defaultStore === s.filePath ? ' (principal)' : ''}
+                                  {s.label}{defaultStore === s.filePath ? ` ${t('(principal)')}` : ''}
                                 </option>
                               ))}
                             </select>
@@ -1727,7 +1768,7 @@ export function AccountsSettings({
                             <input
                               className="inp"
                               value={imp.newName}
-                              placeholder={`Emails — ${imp.label || imp.g.email}`}
+                              placeholder={t('Emails — {name}', { name: imp.label || imp.g.email })}
                               onChange={(e) => setImp({ ...imp, newName: e.target.value })}
                             />
                           </Field>
@@ -1740,14 +1781,13 @@ export function AccountsSettings({
                               checked={imp.leave}
                               onChange={(e) => setImp({ ...imp, leave: e.target.checked })}
                             />
-                            Deixar cópia das mensagens no servidor
-                            {imp.leave && imp.leaveDays > 0 && ` por ${imp.leaveDays} dias`}
+                            {t('Deixar cópia das mensagens no servidor')}
+                            {imp.leave && imp.leaveDays > 0 && t(' por {n} dias', { n: imp.leaveDays })}
                           </label>
                         )}
                         {(imp.g.signatureHtml || imp.g.signatureReplyHtml) && (
                           <span className="guess-hint" style={{ display: 'block', marginTop: 6 }}>
-                            Esta conta tem assinatura do Outlook — depois da importação ela aparece como
-                            sugestão na aba Assinaturas.
+                            {t('Esta conta tem assinatura do Outlook — depois da importação ela aparece como sugestão na aba Assinaturas.')}
                           </span>
                         )}
                         {impTest && (
@@ -1765,17 +1805,17 @@ export function AccountsSettings({
                             disabled={impBusy}
                             onClick={() => setWizStep('choose')}
                           >
-                            ← Voltar
+                            {t('← Voltar')}
                           </button>
                           <button className="btn" disabled={impBusy} onClick={() => void doTest()}>
-                            {impBusy ? 'Testando…' : 'Testar conta'}
+                            {impBusy ? t('Testando…') : t('Testar conta')}
                           </button>
                           <button className="btn btn-primary" disabled={impBusy} onClick={() => void doImport()}>
-                            {impBusy ? 'Importando…' : 'Importar esta conta'}
+                            {impBusy ? t('Importando…') : t('Importar esta conta')}
                           </button>
                           <button
                             className="btn"
-                            title="Abrir o formulário completo para revisar todos os campos"
+                            title={t('Abrir o formulário completo para revisar todos os campos')}
                             disabled={impBusy}
                             onClick={() => {
                               const g = imp.g;
@@ -1784,7 +1824,7 @@ export function AccountsSettings({
                               applyGuess(g);
                             }}
                           >
-                            Editar detalhes
+                            {t('Editar detalhes')}
                           </button>
                         </div>
                       </>
@@ -1801,21 +1841,21 @@ export function AccountsSettings({
         {/* Assinaturas — lista na aba; a edição acontece num diálogo amplo */}
         {tab === 'sigs' && (
         <section className="set-card fill">
-          <h3 className="set-card-title"><Icon name="pen" size={15} /> Assinaturas</h3>
+          <h3 className="set-card-title"><Icon name="pen" size={15} /> {t('Assinaturas')}</h3>
           <p className="set-hint">
-            Clique em <strong>Editar</strong> para abrir o editor e marque
-            <strong> quais contas usam</strong> cada assinatura — a mesma assinatura
-            pode ser aplicada a vários emails, em novas mensagens e/ou respostas.
+            {t('Clique em')} <strong>{t('Editar')}</strong>{' '}
+            {t('para abrir o editor e marque')}<strong> {t('quais contas usam')}</strong>{' '}
+            {t('cada assinatura — a mesma assinatura pode ser aplicada a vários emails, em novas mensagens e/ou respostas.')}
           </p>
           {importedSigs.length > 0 && (
             <div className="sig-import">
-              <div className="sig-import-title">Assinaturas encontradas na importação do Outlook</div>
+              <div className="sig-import-title">{t('Assinaturas encontradas na importação do Outlook')}</div>
               {importedSigs.map((s, i) => (
                 <div key={i} className="acct-card sig-card import">
                   <div className="sig-avatar import"><Icon name="envelope" size={15} /></div>
                   <div className="acct-info">
                     <div className="acct-name">{s.name}</div>
-                    <div className="acct-sub">Nenhuma conta usa ainda</div>
+                    <div className="acct-sub">{t('Nenhuma conta usa ainda')}</div>
                   </div>
                   <button
                     className="btn"
@@ -1825,13 +1865,13 @@ export function AccountsSettings({
                       setImportedSigs((prev) => prev.filter((_, j) => j !== i));
                     }}
                   >
-                    Criar assinatura
+                    {t('Criar assinatura')}
                   </button>
                   <button
                     className="btn btn-ghost"
                     onClick={() => setImportedSigs((prev) => prev.filter((_, j) => j !== i))}
                   >
-                    Descartar
+                    {t('Descartar')}
                   </button>
                 </div>
               ))}
@@ -1840,7 +1880,7 @@ export function AccountsSettings({
           <div className="sig-rows fill-scroll">
             {signatures.length === 0 && (
               <div className="empty-state">
-                Nenhuma assinatura — clique em "Nova assinatura" para criar.
+                {t('Nenhuma assinatura — clique em "Nova assinatura" para criar.')}
               </div>
             )}
             {signatures.map((s) => {
@@ -1851,8 +1891,8 @@ export function AccountsSettings({
                 .filter((a) => a.signatureReplyId === s.id)
                 .map((a) => a.label || a.email);
               const used = [
-                usedNew.length ? `novas: ${usedNew.join(', ')}` : '',
-                usedReply.length ? `respostas: ${usedReply.join(', ')}` : '',
+                usedNew.length ? t('novas: {list}', { list: usedNew.join(', ') }) : '',
+                usedReply.length ? t('respostas: {list}', { list: usedReply.join(', ') }) : '',
               ]
                 .filter(Boolean)
                 .join(' · ');
@@ -1863,23 +1903,23 @@ export function AccountsSettings({
                     <div className="acct-name">
                       {s.name}
                       {usedNew.length > 0 && (
-                        <span className="badge badge-pst">novas · {usedNew.length}</span>
+                        <span className="badge badge-pst">{t('novas')} · {usedNew.length}</span>
                       )}
                       {usedReply.length > 0 && (
-                        <span className="badge badge-local">respostas · {usedReply.length}</span>
+                        <span className="badge badge-local">{t('respostas')} · {usedReply.length}</span>
                       )}
                     </div>
                     <div className="acct-sub" title={used}>
-                      {used || 'Não usada por nenhuma conta'}
+                      {used || t('Não usada por nenhuma conta')}
                     </div>
                   </div>
-                  <button className="btn btn-ghost" onClick={() => openSignature(s)}>Editar</button>
+                  <button className="btn btn-ghost" onClick={() => openSignature(s)}>{t('Editar')}</button>
                   <button
                     className="btn btn-ghost danger"
                     onClick={() =>
                       setConfirm({
-                        title: 'Excluir assinatura',
-                        message: `Excluir a assinatura "${s.name}"? Contas que a usam ficarão sem assinatura.`,
+                        title: t('Excluir assinatura'),
+                        message: t('Excluir a assinatura "{name}"? Contas que a usam ficarão sem assinatura.', { name: s.name }),
                         onOk: () => {
                           setConfirm(null);
                           void window.outlook.removeSignature(s.id).then(() => {
@@ -1890,7 +1930,7 @@ export function AccountsSettings({
                       })
                     }
                   >
-                    Excluir
+                    {t('Excluir')}
                   </button>
                 </div>
               );
@@ -1900,11 +1940,11 @@ export function AccountsSettings({
             <button
               className="btn btn-primary"
               onClick={() => {
-                setSigDraft({ name: `Assinatura ${signatures.length + 1}`, html: '' });
+                setSigDraft({ name: t('Assinatura {n}', { n: signatures.length + 1 }), html: '' });
                 setSigAssign({});
               }}
             >
-              <Icon name="new" size={14} /> Nova assinatura
+              <Icon name="new" size={14} /> {t('Nova assinatura')}
             </button>
           </div>
 
@@ -1921,8 +1961,8 @@ export function AccountsSettings({
           >
             <div className="sig-dlg">
               <div className="sig-dlg-head">
-                <h2>{sigDraft.id ? 'Editar assinatura' : 'Nova assinatura'}</h2>
-                <button className="sig-dlg-close" title="Fechar" onClick={() => setSigDraft(null)}>✕</button>
+                <h2>{sigDraft.id ? t('Editar assinatura') : t('Nova assinatura')}</h2>
+                <button className="sig-dlg-close" title={t('Fechar')} onClick={() => setSigDraft(null)}>✕</button>
               </div>
               <div className="sig-dlg-body">
                 <Field label="Nome da assinatura">
@@ -1935,44 +1975,39 @@ export function AccountsSettings({
                 {/* div.fld (não <label>): o clique numa imagem dentro do editor
                     não deve disparar o comportamento padrão de label */}
                 <div className="fld sig-dlg-editor">
-                  <span>Conteúdo</span>
+                  <span>{t('Conteúdo')}</span>
                   <RichTextEditor
                     key={sigDraft.id || 'nova'}
                     value={sigDraft.html}
                     onChange={(html) => setSigDraft({ ...sigDraft, html })}
-                    placeholder="Seu Nome — Cargo, Empresa, telefone…"
+                    placeholder={t('Seu Nome — Cargo, Empresa, telefone…')}
                   />
                 </div>
                 <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>
-                  Para ajustar uma imagem, clique nela e use "Tamanho da imagem…"
-                  (ou dê duplo clique) — largura e altura são editáveis no diálogo.
+                  {t('Para redimensionar uma imagem, clique nela e arraste a alça do canto inferior direito — a proporção é mantida.')}
                 </span>
 
                 {/* Vínculo assinatura → contas: a mesma assinatura pode servir a
                     várias contas, em novas mensagens e/ou respostas. */}
                 <div style={{ border: '1px solid var(--border)', borderRadius: 8, padding: '8px 10px' }}>
-                  <div className="grp-title" style={{ marginTop: 0 }}>Contas que usam esta assinatura</div>
+                  <div className="grp-title" style={{ marginTop: 0 }}>{t('Contas que usam esta assinatura')}</div>
                   {accounts.length === 0 && (
                     <span style={{ fontSize: 12, color: 'var(--text-dim)' }}>
-                      Nenhuma conta cadastrada — crie uma na aba Email.
+                      {t('Nenhuma conta cadastrada — crie uma na aba Email.')}
                     </span>
                   )}
                   {accounts.length > 0 && (
                     <>
                       {accounts.map((a) => {
                         const asg = sigAssign[a.id] || { new: false, reply: false };
-                        const cell: React.CSSProperties = {
+                        const chk: React.CSSProperties = {
                           display: 'flex',
-                          flexDirection: 'column',
                           alignItems: 'center',
-                          gap: 2,
-                          minWidth: 110,
-                        };
-                        const lbl: React.CSSProperties = {
-                          fontSize: 10.5,
+                          gap: 4,
+                          fontSize: 11.5,
                           color: 'var(--text-dim)',
-                          textAlign: 'center',
-                          lineHeight: 1.2,
+                          cursor: 'pointer',
+                          whiteSpace: 'nowrap',
                         };
                         return (
                           <div
@@ -1980,9 +2015,9 @@ export function AccountsSettings({
                             style={{
                               display: 'grid',
                               gridTemplateColumns: '1fr auto auto',
-                              gap: '4px 16px',
+                              gap: '2px 14px',
                               alignItems: 'center',
-                              padding: '4px 0',
+                              padding: '3px 0',
                               borderTop: '1px dashed var(--border)',
                             }}
                           >
@@ -1996,10 +2031,8 @@ export function AccountsSettings({
                               title={a.email}
                             >
                               {a.label || a.email}
-                              <span style={{ color: 'var(--text-dim)' }}> — {a.email}</span>
                             </span>
-                            <label style={{ ...cell, cursor: 'pointer' }}>
-                              <span style={lbl}>Novas mensagens</span>
+                            <label style={chk} title={t('Novas mensagens')}>
                               <input
                                 type="checkbox"
                                 style={{ margin: 0 }}
@@ -2011,9 +2044,9 @@ export function AccountsSettings({
                                   })
                                 }
                               />
+                              {t('Novas')}
                             </label>
-                            <label style={{ ...cell, cursor: 'pointer' }}>
-                              <span style={lbl}>Respostas /<br />encaminhamentos</span>
+                            <label style={chk} title={t('Respostas e encaminhamentos')}>
                               <input
                                 type="checkbox"
                                 style={{ margin: 0 }}
@@ -2025,25 +2058,26 @@ export function AccountsSettings({
                                   })
                                 }
                               />
+                              {t('Respostas')}
                             </label>
                           </div>
                         );
                       })}
                       <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>
-                        Os vínculos são aplicados ao clicar em Salvar.
+                        {t('Os vínculos são aplicados ao clicar em Salvar.')}
                       </span>
                     </>
                   )}
                 </div>
               </div>
               <div className="sig-dlg-foot">
-                <button className="btn" onClick={() => setSigDraft(null)}>Cancelar</button>
+                <button className="btn" onClick={() => setSigDraft(null)}>{t('Cancelar')}</button>
                 <button
                   className="btn btn-primary"
                   disabled={!sigDraft.name.trim()}
                   onClick={saveSignature}
                 >
-                  Salvar
+                  {t('Salvar')}
                 </button>
               </div>
             </div>
@@ -2053,85 +2087,68 @@ export function AccountsSettings({
         {/* Regras de recebimento */}
         {tab === 'rules' && (
         <section className="set-card fill">
-          <h3 className="set-card-title"><Icon name="filter" size={15} /> Regras de recebimento</h3>
+          <h3 className="set-card-title"><Icon name="filter" size={15} /> {t('Regras de recebimento')}</h3>
           <p className="set-hint">
-            Quando chegar email novo, as regras são avaliadas em ordem — a primeira que combinar
-            arquiva a mensagem na pasta escolhida. <strong>Regra sem condições combina com TODAS as mensagens</strong> —
-            preencha pelo menos um campo "contém" para filtrar.
+            {t('Quando chegar email novo, as regras são avaliadas em ordem — a primeira que combinar arquiva a mensagem na pasta escolhida.')}{' '}
+            <strong>{t('Regra sem condições combina com TODAS as mensagens')}</strong> —{' '}
+            {t('preencha pelo menos um campo "contém" para filtrar.')}
           </p>
           <div className="run-now">
             <div className="run-now-text">
-              <div className="grp-title" style={{ marginTop: 0 }}>Executar regras</div>
+              <div className="grp-title" style={{ marginTop: 0 }}>{t('Executar regras')}</div>
               <p className="set-hint" style={{ margin: 0 }}>
-                Aplica regras às mensagens de uma pasta existente, sem esperar um novo recebimento.
+                {t('Aplica regras às mensagens de uma pasta existente, sem esperar um novo recebimento.')}
               </p>
             </div>
             <button
               className="btn btn-primary"
-              disabled={accounts.length === 0}
+              disabled={runSources.length === 0 || runnableRules.length === 0}
               onClick={() => {
                 setRunMsg('');
+                setRunRuleId('');
+                setRunStore('');
                 setShowRun(true);
               }}
             >
-              Executar regras
+              {t('Executar regras')}
             </button>
           </div>
           {showRun && (
             <div className="modal-overlay" onMouseDown={(e) => e.target === e.currentTarget && setShowRun(false)}>
-              <div className="app-dlg" role="dialog" aria-label="Executar regras">
+              <div className="app-dlg" role="dialog" aria-label={t('Executar regras')}>
                 <div className="app-dlg-head">
-                  <h2>Executar regras</h2>
-                  <button className="app-dlg-close" title="Fechar" onClick={() => setShowRun(false)}>✕</button>
+                  <h2>{t('Executar regras')}</h2>
+                  <button className="app-dlg-close" title={t('Fechar')} onClick={() => setShowRun(false)}>✕</button>
                 </div>
                 <div className="app-dlg-body">
                   <p className="set-hint" style={{ margin: 0 }}>
-                    Escolha a conta, marque as regras e a pasta. Regras desativadas também podem ser executadas.
+                    {t('Escolha a regra e a pasta — o app verifica cada mensagem da pasta e move para o destino da regra as que combinam. Regras desativadas também podem ser executadas.')}
                   </p>
-                  <Field label="Conta">
-                    <select className="inp" value={runAccount} onChange={(e) => setRunAccount(e.target.value)}>
-                      {accounts.map((a) => (
-                        <option key={a.id} value={a.id}>{a.label || a.email} — {a.email}</option>
+                  <Field label="Regra">
+                    <select className="inp" value={runRuleId} onChange={(e) => setRunRuleId(e.target.value)}>
+                      <option value="">{t('— escolha a regra —')}</option>
+                      {runnableRules.map((r) => (
+                        <option key={r.id} value={r.id}>
+                          {r.name || t('(sem nome)')}{!r.enabled ? t(' (desativada)') : ''}
+                        </option>
                       ))}
                     </select>
                   </Field>
-                  <div className="run-now-rules">
-                    {runAccountRules.length === 0 && (
-                      <span className="run-now-empty">Esta conta não tem regras. Crie uma na lista abaixo.</span>
-                    )}
-                    {runAccountRules.map((r) => (
-                      <label key={r.id} className="run-now-rule">
-                        <input
-                          type="checkbox"
-                          checked={runRuleIds.includes(r.id)}
-                          onChange={(e) =>
-                            setRunRuleIds(
-                              e.target.checked
-                                ? [...runRuleIds, r.id]
-                                : runRuleIds.filter((id) => id !== r.id),
-                            )
-                          }
-                        />
-                        <span className="run-now-rule-name">
-                          {r.name || '(sem nome)'}
-                          {!r.enabled && <em className="run-now-off"> — desativada</em>}
-                        </span>
-                        <span className="run-now-rule-target">
-                          → {pstLabel(r.targetPstPath)} › {r.targetFolder}
-                        </span>
-                      </label>
-                    ))}
-                  </div>
+                  {runRuleCatchAll && (
+                    <span className="run-now-warn">
+                      {t('Atenção: esta regra não tem condições — combina com TODAS as mensagens da pasta escolhida.')}
+                    </span>
+                  )}
+                  {runnableRules.length === 0 && (
+                    <span className="run-now-empty">{t('Nenhuma regra cadastrada — crie uma na lista abaixo.')}</span>
+                  )}
                   <div className="run-now-grid">
                     <Field label="Arquivo de dados">
-                      <div className="run-now-static">
-                        {runSrcObj ? runSrcObj.label : '—'}
-                      </div>
-                      {runAccountObj?.deliveryPath && !runDeliverySrc && (
-                        <span className="run-now-warn">
-                          O arquivo de entrega desta conta não está aberto — usando o principal.
-                        </span>
-                      )}
+                      <select className="inp" value={runSource} onChange={(e) => setRunStore(e.target.value)}>
+                        {runSources.map((s) => (
+                          <option key={s.id} value={s.id}>{s.label}</option>
+                        ))}
+                      </select>
                     </Field>
                     <Field label="Pasta">
                       <select className="inp" value={runFolder} onChange={(e) => setRunFolder(e.target.value)}>
@@ -2142,18 +2159,45 @@ export function AccountsSettings({
                     </Field>
                   </div>
                   {runSources.length === 0 && (
-                    <div className="empty-state">Abra um arquivo de dados para executar as regras.</div>
+                    <div className="empty-state">{t('Abra um arquivo de dados para executar as regras.')}</div>
+                  )}
+                  {runBusy && runProg && (
+                    <>
+                      <div style={{ height: 10, borderRadius: 6, background: 'var(--surface-mid)', overflow: 'hidden', border: '1px solid var(--border)' }}>
+                        <div
+                          style={{
+                            height: '100%',
+                            background: 'var(--blue)',
+                            width: `${runProg.total ? Math.min(100, (runProg.done / runProg.total) * 100) : 0}%`,
+                            transition: 'width 0.2s',
+                          }}
+                        />
+                      </div>
+                      <div style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 4 }}>
+                        {t('Verificando {done} / {total} mensagens', { done: runProg.done, total: runProg.total })}
+                        {runProg.applied > 0 && t(' — {n} combinaram até agora', { n: runProg.applied })}
+                      </div>
+                    </>
+                  )}
+                  {runBusy && !runProg && (
+                    <div style={{ fontSize: 11, color: 'var(--text-dim)' }}>{t('Preparando…')}</div>
                   )}
                   {runMsg && <div className="run-now-msg">{runMsg}</div>}
                 </div>
                 <div className="app-dlg-foot">
-                  <button className="btn" onClick={() => setShowRun(false)}>Fechar</button>
+                  {runBusy ? (
+                    <button className="btn" onClick={() => window.outlook.cancelApplyRules?.()}>
+                      {t('Cancelar')}
+                    </button>
+                  ) : (
+                    <button className="btn" onClick={() => setShowRun(false)}>{t('Fechar')}</button>
+                  )}
                   <button
                     className="btn btn-primary"
-                    disabled={runBusy || !runFolder || !runSource || runRuleIds.length === 0}
+                    disabled={runBusy || !runFolder || !runSource || !runRuleId}
                     onClick={runNow}
                   >
-                    {runBusy ? 'Executando…' : 'Executar agora'}
+                    {runBusy ? t('Verificando…') : t('Executar agora')}
                   </button>
                 </div>
               </div>
@@ -2161,58 +2205,63 @@ export function AccountsSettings({
           )}
           <div className="fill-scroll">
           {rules.length === 0 && (
-            <div className="empty-state">Nenhuma regra cadastrada — mensagens novas vão para a pasta de entrega da conta.</div>
+            <div className="empty-state">{t('Nenhuma regra cadastrada — mensagens novas vão para a pasta de entrega da conta.')}</div>
           )}
           {rules.map((r) => {
             const missing = accountMissing(r.accountId);
-            const noConds = !r.conditions.fromContains && !r.conditions.toContains && !r.conditions.subjectContains;
+            const noConds = !r.conditions?.fromContains && !r.conditions?.toContains && !r.conditions?.subjectContains;
             const isAuto = r.name?.startsWith('Entrega padrão');
             return (
               <div
                 key={r.id}
                 className={`rule-card${!r.enabled ? ' off' : ''}${missing ? ' broken' : ''}`}
               >
-                <input
-                  type="checkbox"
-                  checked={r.enabled}
-                  onChange={() => toggleRule(r)}
-                  title={r.enabled ? 'Desativar regra' : 'Ativar regra'}
-                />
+                <label
+                  className="switch"
+                  title={r.enabled ? t('Regra ativa — clique para desativar') : t('Regra desativada — clique para ativar')}
+                >
+                  <input
+                    type="checkbox"
+                    checked={r.enabled}
+                    onChange={() => toggleRule(r)}
+                  />
+                  <span className="switch-slider" />
+                </label>
                 <span className="acct-info">
                   <span className="acct-name">
-                    {r.name || '(sem nome)'}
-                    {isAuto && <span className="badge badge-off">automática</span>}
+                    {r.name || t('(sem nome)')}
+                    {isAuto && <span className="badge badge-off">{t('automática')}</span>}
                     {missing && (
-                      <span className="badge badge-warn" title="A conta de email desta regra foi removida. Edite e escolha uma conta existente.">
-                        conta ausente
+                      <span className="badge badge-warn" title={t('A conta de email desta regra foi removida. Edite e escolha uma conta existente.')}>
+                        {t('conta ausente')}
                       </span>
                     )}
                   </span>
                   <span className="rule-desc">
-                    em <em>{accountLabel(r.accountId)}</em>:
+                    {t('em')} <em>{accountLabel(r.accountId)}</em>:
                     {noConds ? (
                       <span className="cond-chip cond-chip-any">
-                        qualquer mensagem
+                        {t('qualquer mensagem')}
                       </span>
                     ) : (
                       <>
-                        {r.conditions.fromContains && <span className="cond-chip">De contém "{r.conditions.fromContains}"</span>}
-                        {r.conditions.toContains && <span className="cond-chip">Para contém "{r.conditions.toContains}"</span>}
-                        {r.conditions.subjectContains && <span className="cond-chip">Assunto contém "{r.conditions.subjectContains}"</span>}
+                        {r.conditions?.fromContains && <span className="cond-chip">{t('De contém')} "{r.conditions.fromContains}"</span>}
+                        {r.conditions?.toContains && <span className="cond-chip">{t('Para contém')} "{r.conditions.toContains}"</span>}
+                        {r.conditions?.subjectContains && <span className="cond-chip">{t('Assunto contém')} "{r.conditions.subjectContains}"</span>}
                       </>
                     )}
-                    {' → '}arquivar em <strong>{pstLabel(r.targetPstPath)}</strong> › {r.targetFolder}
+                    {' → '}{t('arquivar em')} <strong>{pstLabel(r.targetPstPath)}</strong> › {r.targetFolder}
                   </span>
                 </span>
-                <button onClick={() => editRule(r)} className="btn btn-ghost">Editar</button>
+                <button onClick={() => editRule(r)} className="btn btn-ghost">{t('Editar')}</button>
                 <button
                   onClick={() => duplicateRule(r)}
                   className="btn btn-ghost"
-                  title="Duplicar regra — abre o editor para escolher a conta de email"
+                  title={t('Duplicar regra — abre o editor para escolher a conta de email')}
                 >
-                  Duplicar
+                  {t('Duplicar')}
                 </button>
-                <button onClick={() => removeRule(r.id)} className="btn btn-ghost danger">Remover</button>
+                <button onClick={() => removeRule(r.id)} className="btn btn-ghost danger">{t('Remover')}</button>
               </div>
             );
           })}
@@ -2226,7 +2275,7 @@ export function AccountsSettings({
               setRuleDraft({ ...EMPTY_RULE });
             }}
           >
-            <Icon name="new" size={14} /> Nova regra
+            <Icon name="new" size={14} /> {t('Nova regra')}
           </button>
         </section>
         )}
@@ -2240,8 +2289,8 @@ export function AccountsSettings({
               onClick={(e) => e.stopPropagation()}
             >
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                <strong style={{ fontSize: 14 }}>{ruleDraft.id ? 'Editar regra' : 'Nova regra'}</strong>
-                <button className="set-close" onClick={() => { setRuleDraft(null); setCustomFolder(false); }} title="Fechar">
+                <strong style={{ fontSize: 14 }}>{ruleDraft.id ? t('Editar regra') : t('Nova regra')}</strong>
+                <button className="set-close" onClick={() => { setRuleDraft(null); setCustomFolder(false); }} title={t('Fechar')}>
                   <Icon name="close" size={15} />
                 </button>
               </div>
@@ -2257,24 +2306,24 @@ export function AccountsSettings({
                   value={ruleDraft.accountId}
                   onChange={(e) => setRuleDraft({ ...ruleDraft, accountId: e.target.value })}
                 >
-                  <option value="">— selecione a conta (obrigatório) —</option>
+                  <option value="">{t('— selecione a conta (obrigatório) —')}</option>
                   {accounts.map((a) => (
                     <option key={a.id} value={a.id}>{a.email}</option>
                   ))}
                   {ruleDraft.accountId !== '' && accountMissing(ruleDraft.accountId) && (
-                    <option value={ruleDraft.accountId}>⚠ {ruleDraft.accountId} (conta removida)</option>
+                    <option value={ruleDraft.accountId}>⚠ {ruleDraft.accountId} {t('(conta removida)')}</option>
                   )}
                 </select>
                 {ruleDraft.accountId !== '' && accountMissing(ruleDraft.accountId) && (
                   <span style={{ fontSize: 11, color: '#a4262c' }}>
-                    A conta desta regra foi removida — selecione uma conta existente para corrigir.
+                    {t('A conta desta regra foi removida — selecione uma conta existente para corrigir.')}
                   </span>
                 )}
                 {ruleDraft.accountId === '' && (
-                  <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>É obrigatório escolher uma conta existente.</span>
+                  <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>{t('É obrigatório escolher uma conta existente.')}</span>
                 )}
               </Field>
-              <div className="grp-title">Condições — preencha pelo menos uma para filtrar</div>
+              <div className="grp-title">{t('Condições — preencha pelo menos uma para filtrar')}</div>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
                 <Field label="De contém (opcional)">
                   <input
@@ -2300,11 +2349,11 @@ export function AccountsSettings({
               </div>
               {!ruleDraft.conditions.fromContains && !ruleDraft.conditions.toContains && !ruleDraft.conditions.subjectContains && (
                 <div className="rule-warn">
-                  ⚠ Sem condições, esta regra vale para <strong>todas as mensagens</strong> que chegarem na conta —
-                  elas serão arquivadas na pasta abaixo em vez da entrega padrão.
+                  ⚠ {t('Sem condições, esta regra vale para')} <strong>{t('todas as mensagens')}</strong>{' '}
+                  {t('que chegarem na conta — elas serão arquivadas na pasta abaixo em vez da entrega padrão.')}
                 </div>
               )}
-              <div className="grp-title">Destino — onde a mensagem é arquivada</div>
+              <div className="grp-title">{t('Destino — onde a mensagem é arquivada')}</div>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
                 <Field label="Arquivar na base de dados">
                   <select
@@ -2315,7 +2364,7 @@ export function AccountsSettings({
                       setCustomFolder(false);
                     }}
                   >
-                    <option value="">— selecione a base —</option>
+                    <option value="">{t('— selecione a base —')}</option>
                     {uniqueSources.map((s) => (
                       <option key={s.id} value={s.filePath}>{s.label} ({s.filePath})</option>
                     ))}
@@ -2335,19 +2384,19 @@ export function AccountsSettings({
                         }
                       }}
                     >
-                      <option value="">— selecione a pasta —</option>
+                      <option value="">{t('— selecione a pasta —')}</option>
                       {folderChoices.map((f) => (
                         <option key={f.path} value={f.path}>{f.label}</option>
                       ))}
-                      <option value="__new">＋ Nova pasta…</option>
+                      <option value="__new">＋ {t('Nova pasta…')}</option>
                     </select>
                   ) : (
                     <input
                       className="inp"
                       placeholder={
                         ruleDraft.targetPstPath
-                          ? 'Nome da pasta (será criada se não existir)'
-                          : 'Selecione a base primeiro'
+                          ? t('Nome da pasta (será criada se não existir)')
+                          : t('Selecione a base primeiro')
                       }
                       disabled={!ruleDraft.targetPstPath}
                       value={ruleDraft.targetFolder}
@@ -2362,19 +2411,11 @@ export function AccountsSettings({
                         setRuleDraft({ ...ruleDraft, targetFolder: folderChoices[0]?.path || '' });
                       }}
                     >
-                      ← escolher pasta existente
+                      {t('← escolher pasta existente')}
                     </button>
                   )}
                 </Field>
               </div>
-              <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, cursor: 'pointer' }}>
-                <input
-                  type="checkbox"
-                  checked={!!ruleDraft.stopProcessing}
-                  onChange={(e) => setRuleDraft({ ...ruleDraft, stopProcessing: e.target.checked })}
-                />
-                Parar de processar mais regras
-              </label>
               <div style={{ display: 'flex', gap: 8 }}>
                 <button
                   onClick={saveRule}
@@ -2386,7 +2427,7 @@ export function AccountsSettings({
                   }
                   className="btn btn-primary"
                 >
-                  Salvar regra
+                  {t('Salvar regra')}
                 </button>
                 <button
                   onClick={() => {
@@ -2395,7 +2436,7 @@ export function AccountsSettings({
                   }}
                   className="btn"
                 >
-                  Cancelar
+                  {t('Cancelar')}
                 </button>
               </div>
             </div>
@@ -2403,112 +2444,178 @@ export function AccountsSettings({
         )}
 
         {/* Geral — privacidade e exibição */}
+        {/* Lixo eletrônico — lista de remetentes bloqueados (aba própria:
+            a lista pode crescer bastante). */}
+        {tab === 'lixo' && (
+        <section className="set-card fill">
+          <h3 className="set-card-title"><Icon name="junk" size={15} /> {t('Remetentes bloqueados')}</h3>
+          <p className="set-hint">
+            {t('mensagens destes endereços ou domínios caem direto na pasta de lixo eletrônico, sem passar pelas regras. Também dá para bloquear pelo botão direito na mensagem ("Bloquear Remetente").')}
+          </p>
+          <div style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
+            <input
+              className="inp"
+              style={{ flex: 1 }}
+              placeholder="spam@dominio.com ou dominio.com"
+              value={blockedInput}
+              onChange={(e) => setBlockedInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && blockedInput.trim()) {
+                  void window.outlook.blockedAdd(blockedInput).then(setBlocked);
+                  setBlockedInput('');
+                }
+              }}
+            />
+            <button
+              className="btn btn-primary"
+              disabled={!blockedInput.trim()}
+              onClick={() => {
+                void window.outlook.blockedAdd(blockedInput).then(setBlocked);
+                setBlockedInput('');
+              }}
+            >
+              <Icon name="new" size={14} /> {t('Bloquear')}
+            </button>
+          </div>
+          {blocked.length === 0 && (
+            <div className="empty-state">
+              {t('Nenhum remetente bloqueado — use o campo acima ou o botão direito numa mensagem.')}
+            </div>
+          )}
+          {blocked.length > 0 && (
+            <div className="blocked-list fill-scroll" style={{ maxHeight: 'none' }}>
+              {blocked.map((b) => (
+                <div key={b} className="blocked-row">
+                  <span className="blocked-addr">
+                    {b.includes('@') ? b : `*@${b}`}
+                  </span>
+                  <button
+                    className="btn btn-ghost"
+                    style={{ padding: '1px 8px', fontSize: 11 }}
+                    title={t('Remover da lista')}
+                    onClick={() => void window.outlook.blockedRemove(b).then(setBlocked)}
+                  >
+                    {t('Desbloquear')}
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+          {blocked.length > 0 && (
+            <p className="set-hint" style={{ marginTop: 8, marginBottom: 0 }}>
+              {t('{n} bloqueado(s)', { n: blocked.length })}
+            </p>
+          )}
+        </section>
+        )}
+
         {tab === 'geral' && (
-        <section className="set-card">
-          <h3 className="set-card-title"><Icon name="settings" size={15} /> Geral</h3>
-          <div className="grp-title">Aparência</div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6, fontSize: 12 }}>
-            <span style={{ color: 'var(--text-dim)' }}>Tema da interface:</span>
-            <select
-              className="inp"
-              style={{ width: 'auto' }}
-              value={theme}
-              onChange={(e) => {
-                const t = e.target.value as 'system' | 'light' | 'dark';
-                setThemeState(t);
-                void window.outlook.setTheme?.(t).then(() => applyTheme(t));
-              }}
-            >
-              <option value="system">Igual ao sistema</option>
-              <option value="light">Claro</option>
-              <option value="dark">Escuro</option>
-            </select>
-          </div>
-          <div className="grp-title" style={{ marginTop: 14 }}>Envio e recebimento</div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6, fontSize: 12 }}>
-            <span style={{ color: 'var(--text-dim)' }}>Verificar novas mensagens a cada:</span>
-            <select
-              className="inp"
-              style={{ width: 'auto' }}
-              value={syncMin}
-              onChange={(e) => {
-                const v = Number(e.target.value);
-                setSyncMin(v);
-                void window.outlook.setSyncInterval?.(v);
-              }}
-            >
-              <option value={0}>desligado</option>
-              <option value={1}>1 minuto</option>
-              <option value={5}>5 minutos</option>
-              <option value={10}>10 minutos</option>
-              <option value={15}>15 minutos</option>
-              <option value={30}>30 minutos</option>
-              <option value={60}>60 minutos</option>
-            </select>
-          </div>
-          <div className="grp-title">Privacidade</div>
-          <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, fontSize: 12, cursor: 'pointer', maxWidth: 560 }}>
-            <input
-              type="checkbox"
-              style={{ marginTop: 2 }}
-              checked={loadImages}
-              onChange={(e) => {
-                setLoadImages(e.target.checked);
-                void window.outlook.setLoadImages?.(e.target.checked);
-              }}
-            />
-            <span>
-              <strong>Baixar imagens externas automaticamente</strong>
-              <br />
-              <span style={{ color: 'var(--text-dim)' }}>
-                Quando desativado (padrão, igual ao Outlook), imagens hospedadas na internet
-                dentro de emails HTML ficam bloqueadas — remetentes não podem rastrear quando
-                você abriu a mensagem. O HTML do email continua sendo interpretado.
+        <div className="geral-grid">
+          <section className="set-card">
+            <h3 className="set-card-title"><Icon name="eye" size={15} /> {t('Aparência')}</h3>
+            <Field label={t('Tema da interface')}>
+              <select
+                className="inp"
+                value={theme}
+                onChange={(e) => setThemeState(e.target.value as 'system' | 'light' | 'dark')}
+              >
+                <option value="system">{t('Igual ao sistema')}</option>
+                <option value="light">{t('Claro')}</option>
+                <option value="dark">{t('Escuro')}</option>
+              </select>
+            </Field>
+            <Field label={t('Idioma da interface')}>
+              <select
+                className="inp"
+                value={langPref}
+                onChange={(e) => setLangPref(e.target.value === 'en' ? 'en' : 'pt')}
+              >
+                <option value="pt">Português (Brasil)</option>
+                <option value="en">English</option>
+              </select>
+            </Field>
+            <p className="set-hint" style={{ marginBottom: 0 }}>
+              {t('Pastas padrão já criadas (Caixa de Entrada, Lixo Eletrônico…) passam a ser exibidas no novo idioma; os nomes gravados no disco nunca são alterados — pastas novas nascem com o nome do idioma escolhido.')}
+            </p>
+          </section>
+
+          <section className="set-card">
+            <h3 className="set-card-title"><Icon name="sendReceive" size={15} /> {t('Envio e recebimento')}</h3>
+            <Field label={t('Verificar novas mensagens a cada')}>
+              <select
+                className="inp"
+                value={syncMin}
+                onChange={(e) => setSyncMin(Number(e.target.value))}
+              >
+                <option value={0}>{t('desligado')}</option>
+                <option value={1}>{t('1 minuto')}</option>
+                <option value={5}>{t('{n} minutos', { n: 5 })}</option>
+                <option value={10}>{t('{n} minutos', { n: 10 })}</option>
+                <option value={15}>{t('{n} minutos', { n: 15 })}</option>
+                <option value={30}>{t('{n} minutos', { n: 30 })}</option>
+                <option value={60}>{t('{n} minutos', { n: 60 })}</option>
+              </select>
+            </Field>
+          </section>
+
+          <section className="set-card">
+            <h3 className="set-card-title"><Icon name="eyeOff" size={15} /> {t('Privacidade')}</h3>
+            <label className="opt-row">
+              <input
+                type="checkbox"
+                checked={loadImages}
+                onChange={(e) => setLoadImages(e.target.checked)}
+              />
+              <span>
+                <strong>{t('Baixar imagens externas automaticamente')}</strong>
+                <em>
+                  {t('Quando desativado (padrão), imagens da internet dentro de emails HTML ficam bloqueadas — remetentes não podem rastrear quando você abriu a mensagem.')}
+                </em>
               </span>
-            </span>
-          </label>
-          <div className="grp-title" style={{ marginTop: 14 }}>Segurança</div>
-          <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, fontSize: 12, cursor: 'pointer', maxWidth: 560 }}>
-            <input
-              type="checkbox"
-              style={{ marginTop: 2 }}
-              checked={virusScan}
-              onChange={(e) => {
-                setVirusScan(e.target.checked);
-                void window.outlook.setVirusScan?.(e.target.checked);
-              }}
-            />
-            <span>
-              <strong>Verificar vírus nas mensagens recebidas</strong>
-              <br />
-              <span style={{ color: 'var(--text-dim)' }}>
-                Cada mensagem baixada é verificada pelo antivírus do computador
-                {avEngine ? ` (${avEngine})` : ''}. Mensagens infectadas vão direto para a
-                pasta <b>Itens infectados</b> da base de dados, sem passar pela Caixa de Entrada.
+            </label>
+          </section>
+
+          <section className="set-card">
+            <h3 className="set-card-title"><Icon name="junk" size={15} /> {t('Segurança')}</h3>
+            <label className="opt-row">
+              <input
+                type="checkbox"
+                checked={virusScan}
+                onChange={(e) => setVirusScan(e.target.checked)}
+              />
+              <span>
+                <strong>{t('Verificar vírus nas mensagens recebidas')}</strong>
+                <em>
+                  {t('Cada mensagem baixada é verificada pelo antivírus do computador{eng}. Mensagens infectadas vão direto para a pasta de quarentena, sem passar pela Caixa de Entrada.', {
+                    eng: avEngine ? ` (${avEngine})` : '',
+                  })}
+                </em>
               </span>
-            </span>
-          </label>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 18 }}>
+            </label>
+          </section>
+
+          <div className="geral-wide geral-foot">
             <button
               className="btn btn-primary"
               onClick={() => {
-                // Os campos já persistem na troca — o botão regrava tudo e
-                // confirma, como o "OK" das Opções do Outlook.
+                // Nada persiste na troca — tudo grava de uma vez no Salvar,
+                // como o "OK" das Opções do Outlook.
                 void window.outlook.setTheme?.(theme).then(() => applyTheme(theme));
                 void window.outlook.setSyncInterval?.(syncMin);
                 void window.outlook.setLoadImages?.(loadImages);
                 void window.outlook.setVirusScan?.(virusScan);
+                void setLang(langPref);
                 setGeralSaved(true);
                 setTimeout(() => setGeralSaved(false), 4000);
               }}
             >
-              <Icon name="check" size={14} /> Salvar
+              <Icon name="check" size={14} /> {t('Salvar')}
             </button>
             {geralSaved && (
-              <span style={{ fontSize: 12, color: 'var(--ok)' }}>Configurações salvas.</span>
+              <span style={{ fontSize: 12, color: 'var(--ok)' }}>{t('Configurações salvas.')}</span>
             )}
           </div>
-        </section>
+        </div>
         )}
 
         </div>
@@ -2530,8 +2637,8 @@ export function AccountsSettings({
             <div className="set-head">
               <div className="set-head-icon"><Icon name="new" size={18} /></div>
               <div>
-                <h2>Novo arquivo de dados</h2>
-                <div className="sub">Base própria do Unit Mail — mensagens em .eml</div>
+                <h2>{t('Novo arquivo de dados')}</h2>
+                <div className="sub">{t('Base própria do Unit Mail — mensagens em .eml')}</div>
               </div>
               <button className="set-close" onClick={() => setShowNewStore(false)}>
                 <Icon name="close" size={16} />
@@ -2541,7 +2648,7 @@ export function AccountsSettings({
               <Field label="Nome do arquivo de dados">
                 <input
                   className="inp"
-                  placeholder="Ex.: Arquivo 2024, Emails — Trabalho…"
+                  placeholder={t('Ex.: Arquivo 2024, Emails — Trabalho…')}
                   value={newStoreName}
                   autoFocus
                   onChange={(e) => setNewStoreName(e.target.value)}
@@ -2553,19 +2660,17 @@ export function AccountsSettings({
                   value={newStoreAccount}
                   onChange={(e) => setNewStoreAccount(e.target.value)}
                 >
-                  <option value="">Sem vínculo — qualquer conta pode usar</option>
+                  <option value="">{t('Sem vínculo — qualquer conta pode usar')}</option>
                   {accounts.map((a) => (
                     <option key={a.id} value={a.id}>
                       {a.label || a.email} — {a.email}
-                      {a.deliveryPath ? ' (já tem base)' : ''}
+                      {a.deliveryPath ? t(' (já tem base)') : ''}
                     </option>
                   ))}
                 </select>
               </Field>
               <p className="set-hint">
-                Sem vínculo, a base fica disponível para receber mensagens de várias contas —
-                todas caem na mesma Caixa de Entrada (use Regras para separar em pastas).
-                Com vínculo, só as mensagens daquela conta são entregues aqui.
+                {t('Sem vínculo, a base fica disponível para receber mensagens de várias contas — todas caem na mesma Caixa de Entrada (use Regras para separar em pastas). Com vínculo, só as mensagens daquela conta são entregues aqui.')}
               </p>
               <div style={{ display: 'flex', gap: 8 }}>
                 <button
@@ -2576,7 +2681,7 @@ export function AccountsSettings({
                     void createStore(false);
                   }}
                 >
-                  Criar na pasta de dados
+                  {t('Criar na pasta de dados')}
                 </button>
                 <button
                   className="btn"
@@ -2586,9 +2691,9 @@ export function AccountsSettings({
                     void createStore(true);
                   }}
                 >
-                  Criar em outra pasta…
+                  {t('Criar em outra pasta…')}
                 </button>
-                <button className="btn" onClick={() => setShowNewStore(false)}>Cancelar</button>
+                <button className="btn" onClick={() => setShowNewStore(false)}>{t('Cancelar')}</button>
               </div>
             </div>
           </div>
@@ -2601,7 +2706,7 @@ export function AccountsSettings({
             <div className="set-head">
               <div className="set-head-icon"><Icon name="archive" size={18} /></div>
               <div>
-                <h2>{migrateCloseAfter ? 'Importar arquivo .pst' : 'Migrar para base própria'}</h2>
+                <h2>{migrateCloseAfter ? t('Importar arquivo .pst') : t('Migrar para base própria')}</h2>
                 <div className="sub">{migrateSrc.label}</div>
               </div>
               {!migrateProgress && (
@@ -2622,22 +2727,18 @@ export function AccountsSettings({
               {!migrateProgress && !migrateDone && (
                 <>
                   <p className="set-hint">
-                    Copia TODAS as pastas e mensagens do PST para uma base nova, 100% do Unit Mail —
-                    sem a limitação de "somente leitura" do formato .pst. Nessa base, excluir apaga o
-                    arquivo de verdade e libera espaço em disco de imediato.
+                    {t('Copia TODAS as pastas e mensagens do PST para uma base nova, 100% do Unit Mail — sem a limitação de "somente leitura" do formato .pst. Nessa base, excluir apaga o arquivo de verdade e libera espaço em disco de imediato.')}
                   </p>
                   <div className="rule-warn" style={{ marginBottom: 4 }}>
-                    ⚠ O PST original <strong>não é alterado nem apagado</strong> —
+                    ⚠ {t('O PST original')} <strong>{t('não é alterado nem apagado')}</strong> —
                     {migrateCloseAfter
-                      ? ' só foi aberto para ler os dados e será fechado ao final; o arquivo continua no disco igual estava.'
-                      : ' continua intacto e aberto no app.'}{' '}
-                    Itens de calendário/contatos/tarefas são convertidos para um registro
-                    com assunto e corpo (o formato ICS/vCard original não é preservado).
+                      ? t(' só foi aberto para ler os dados e será fechado ao final; o arquivo continua no disco igual estava.')
+                      : t(' continua intacto e aberto no app.')}{' '}
+                    {t('Itens de calendário/contatos/tarefas são convertidos para um registro com assunto e corpo (o formato ICS/vCard original não é preservado).')}
                   </div>
                   <div className="rule-warn" style={{ marginBottom: 4 }}>
-                    ⏱ <strong>PSTs grandes podem demorar</strong> — um arquivo de vários GB leva
-                    bastante tempo para copiar item a item. O progresso é mostrado durante a
-                    importação; não feche o app enquanto ela roda.
+                    ⏱ <strong>{t('PSTs grandes podem demorar')}</strong> —{' '}
+                    {t('um arquivo de vários GB leva bastante tempo para copiar item a item. O progresso é mostrado durante a importação; não feche o app enquanto ela roda.')}
                   </div>
                   <Field label="Importar para">
                     <select
@@ -2645,20 +2746,19 @@ export function AccountsSettings({
                       value={migrateTarget}
                       onChange={(e) => setMigrateTarget(e.target.value)}
                     >
-                      <option value="">Nova base de dados do Unit Mail</option>
+                      <option value="">{t('Nova base de dados do Unit Mail')}</option>
                       {uniqueSources
                         .filter((s) => s.kind === 'local' && s.id !== migrateSrc.id)
                         .map((s) => (
                           <option key={s.id} value={s.filePath}>
-                            {s.label} — base existente
+                            {s.label} — {t('base existente')}
                           </option>
                         ))}
                     </select>
                   </Field>
                   {migrateTarget ? (
                     <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>
-                      As pastas e mensagens do PST serão mescladas dentro dessa base —
-                      itens com nomes de pasta iguais se juntam.
+                      {t('As pastas e mensagens do PST serão mescladas dentro dessa base — itens com nomes de pasta iguais se juntam.')}
                     </span>
                   ) : (
                     <>
@@ -2671,7 +2771,7 @@ export function AccountsSettings({
                             className="inp"
                             style={{ flex: 1 }}
                             readOnly
-                            value={migrateDir || 'Pasta de dados padrão (Mail/) — escolher outra ao lado'}
+                            value={migrateDir || t('Pasta de dados padrão (Mail/) — escolher outra ao lado')}
                           />
                           <button
                             className="btn"
@@ -2680,7 +2780,7 @@ export function AccountsSettings({
                               if (d) setMigrateDir(d);
                             }}
                           >
-                            Escolher…
+                            {t('Escolher…')}
                           </button>
                         </div>
                       </Field>
@@ -2693,7 +2793,7 @@ export function AccountsSettings({
                       disabled={!migrateTarget && !migrateName.trim()}
                       onClick={runMigration}
                     >
-                      {migrateCloseAfter ? 'Importar' : 'Iniciar migração'}
+                      {migrateCloseAfter ? t('Importar') : t('Iniciar migração')}
                     </button>
                     <button
                       className="btn"
@@ -2702,7 +2802,7 @@ export function AccountsSettings({
                         setMigrateSrc(null);
                       }}
                     >
-                      Cancelar
+                      {t('Cancelar')}
                     </button>
                   </div>
                 </>
@@ -2710,7 +2810,7 @@ export function AccountsSettings({
               {migrateProgress && migrateProgress.phase !== 'done' && (
                 <>
                   <p className="set-hint" style={{ marginBottom: 10 }}>
-                    Migrando "{migrateProgress.currentFolder || migrateSrc.label}"… não feche o app.
+                    {t('Migrando "{f}"… não feche o app.', { f: migrateProgress.currentFolder || migrateSrc.label })}
                   </p>
                   <div style={{ height: 10, borderRadius: 6, background: 'var(--surface-mid)', overflow: 'hidden', border: '1px solid var(--border)' }}>
                     <div
@@ -2723,21 +2823,22 @@ export function AccountsSettings({
                     />
                   </div>
                   <div style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 6 }}>
-                    {migrateProgress.done} / {migrateProgress.total} itens
+                    {migrateProgress.done} / {migrateProgress.total} {t('itens')}
+                    {(migrateProgress.skipped ?? 0) > 0 &&
+                      t(' — {n} já existiam (puladas)', { n: migrateProgress.skipped ?? 0 })}
                   </div>
                 </>
               )}
               {migrateDone && (
                 <>
                   <p className="set-hint">
-                    ✓ {migrateCloseAfter ? 'Importação' : 'Migração'} concluída — base <strong>"{migrateDone}"</strong> criada
-                    com todo o conteúdo.{' '}
+                    ✓ {migrateCloseAfter ? t('Importação') : t('Migração')} {t('concluída — base')} <strong>"{migrateDone}"</strong> {t('criada com todo o conteúdo.')}{' '}
                     {migrateCloseAfter
-                      ? 'O arquivo .pst original não foi alterado — só não fica mais aberto na lista.'
-                      : 'O PST original continua aberto e intocado; feche-o quando quiser (aba "Arquivos de Dados" → Fechar).'}{' '}
-                    Defina a nova base como principal, se desejar.
+                      ? t('O arquivo .pst original não foi alterado — só não fica mais aberto na lista.')
+                      : t('O PST original continua aberto e intocado; feche-o quando quiser (aba "Arquivos de Dados" → Fechar).')}{' '}
+                    {t('Defina a nova base como principal, se desejar.')}
                   </p>
-                  <button className="btn btn-primary" onClick={() => setMigrateSrc(null)}>Concluir</button>
+                  <button className="btn btn-primary" onClick={() => setMigrateSrc(null)}>{t('Concluir')}</button>
                 </>
               )}
             </div>
@@ -2756,8 +2857,8 @@ export function AccountsSettings({
             <div className="set-head">
               <div className="set-head-icon"><Icon name="download" size={18} /></div>
               <div>
-                <h2>Importar do Thunderbird</h2>
-                <div className="sub">mensagens (.mbox) do perfil instalado neste computador</div>
+                <h2>{t('Importar do Thunderbird')}</h2>
+                <div className="sub">{t('mensagens (.mbox) do perfil instalado neste computador')}</div>
               </div>
               {!migrateProgress && (
                 <button className="set-close" onClick={() => setTbProfiles(null)}>
@@ -2769,10 +2870,10 @@ export function AccountsSettings({
               {tbProfiles.length === 0 ? (
                 <>
                   <p className="set-hint">
-                    Nenhum perfil do Thunderbird com mensagens foi encontrado neste computador.
+                    {t('Nenhum perfil do Thunderbird com mensagens foi encontrado neste computador.')}
                   </p>
                   {tbError && <div className="rule-warn">{tbError}</div>}
-                  <button className="btn" onClick={() => setTbProfiles(null)}>Fechar</button>
+                  <button className="btn" onClick={() => setTbProfiles(null)}>{t('Fechar')}</button>
                 </>
               ) : !migrateProgress && !tbDone ? (
                 (() => {
@@ -2780,9 +2881,7 @@ export function AccountsSettings({
                   return (
                     <>
                       <p className="set-hint">
-                        Copia TODAS as pastas e mensagens do perfil para uma base do Unit Mail —
-                        o perfil do Thunderbird não é alterado. Perfis grandes podem demorar;
-                        não feche o app durante a importação.
+                        {t('Copia TODAS as pastas e mensagens do perfil para uma base do Unit Mail — o perfil do Thunderbird não é alterado. Perfis grandes podem demorar; não feche o app durante a importação.')}
                       </p>
                       {tbProfiles.length > 1 && (
                         <Field label="Perfil do Thunderbird">
@@ -2805,25 +2904,24 @@ export function AccountsSettings({
                       )}
                       {prof && (
                         <div className="rule-warn" style={{ marginBottom: 4 }}>
-                          Encontrado: {prof.stores.map((s) => s.label).join(', ')}.
+                          {t('Encontrado: {list}', { list: prof.stores.map((s) => s.label).join(', ') })}
                         </div>
                       )}
                       <Field label="Importar para">
                         <select className="inp" value={tbTarget} onChange={(e) => setTbTarget(e.target.value)}>
-                          <option value="">Nova base de dados do Unit Mail</option>
+                          <option value="">{t('Nova base de dados do Unit Mail')}</option>
                           {uniqueSources
                             .filter((s) => s.kind === 'local')
                             .map((s) => (
                               <option key={s.id} value={s.filePath}>
-                                {s.label} — base existente
+                                {s.label} — {t('base existente')}
                               </option>
                             ))}
                         </select>
                       </Field>
                       {tbTarget ? (
                         <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>
-                          As pastas e mensagens do perfil serão mescladas dentro dessa base —
-                          itens com nomes de pasta iguais se juntam.
+                          {t('As pastas e mensagens do perfil serão mescladas dentro dessa base — itens com nomes de pasta iguais se juntam.')}
                         </span>
                       ) : (
                         <>
@@ -2836,7 +2934,7 @@ export function AccountsSettings({
                                 className="inp"
                                 style={{ flex: 1 }}
                                 readOnly
-                                value={tbDir || 'Pasta de dados padrão (Mail/) — escolher outra ao lado'}
+                                value={tbDir || t('Pasta de dados padrão (Mail/) — escolher outra ao lado')}
                               />
                               <button
                                 className="btn"
@@ -2845,7 +2943,7 @@ export function AccountsSettings({
                                   if (d) setTbDir(d);
                                 }}
                               >
-                                Escolher…
+                                {t('Escolher…')}
                               </button>
                             </div>
                           </Field>
@@ -2858,10 +2956,10 @@ export function AccountsSettings({
                           disabled={!tbSrc || (!tbTarget && !tbName.trim())}
                           onClick={runTbImport}
                         >
-                          Importar
+                          {t('Importar')}
                         </button>
                         <button className="btn" onClick={() => setTbProfiles(null)}>
-                          Cancelar
+                          {t('Cancelar')}
                         </button>
                       </div>
                     </>
@@ -2871,7 +2969,7 @@ export function AccountsSettings({
               {migrateProgress && migrateProgress.phase !== 'done' && (
                 <>
                   <p className="set-hint" style={{ marginBottom: 10 }}>
-                    Importando "{migrateProgress.currentFolder || 'Thunderbird'}"… não feche o app.
+                    {t('Importando "{f}"… não feche o app.', { f: migrateProgress.currentFolder || 'Thunderbird' })}
                   </p>
                   <div style={{ height: 10, borderRadius: 6, background: 'var(--surface-mid)', overflow: 'hidden', border: '1px solid var(--border)' }}>
                     <div
@@ -2884,17 +2982,19 @@ export function AccountsSettings({
                     />
                   </div>
                   <div style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 6 }}>
-                    {migrateProgress.done} / {migrateProgress.total} itens
+                    {migrateProgress.done} / {migrateProgress.total} {t('itens')}
+                    {(migrateProgress.skipped ?? 0) > 0 &&
+                      t(' — {n} já existiam (puladas)', { n: migrateProgress.skipped ?? 0 })}
                   </div>
                 </>
               )}
               {tbDone && (
                 <>
                   <p className="set-hint">
-                    ✓ Importação concluída — base <strong>"{tbDone}"</strong> criada com todo o
-                    conteúdo do perfil. O Thunderbird original não foi alterado.
+                    ✓ {t('Importação concluída — base')} <strong>"{tbDone}"</strong>{' '}
+                    {t('criada com todo o conteúdo do perfil. O Thunderbird original não foi alterado.')}
                   </p>
-                  <button className="btn btn-primary" onClick={() => setTbProfiles(null)}>Concluir</button>
+                  <button className="btn btn-primary" onClick={() => setTbProfiles(null)}>{t('Concluir')}</button>
                 </>
               )}
             </div>

@@ -51,12 +51,42 @@ jobs:
             release/*.rpm
             release/*.pacman
             release/*.tar.gz
+          # Corpo explícito — sem notas automáticas (elas reproduziam as
+          # mensagens de commit, incluindo trailers indesejados).
+          body: |
+            ## Unit Mail ${{ github.ref_name }}
 
-  # Job Windows desativado por enquanto — o app está em fase de testes só no
-  # Linux. Para reativar, remova o "if: false".
+            ⚠️ Versão **Beta** — em fase de testes. Reporte problemas em Issues.
+
+            ### Pacotes para Linux
+
+            | Formato | Distribuições |
+            |---|---|
+            | `.AppImage` | Qualquer distro (executável direto) |
+            | `.deb` | Debian, Ubuntu, Mint e derivados |
+            | `.rpm` | Fedora, RHEL, openSUSE |
+            | `.pacman` | Arch e derivados |
+            | `.tar.gz` | Portátil — descompactar e executar |
+
+            ### Pacotes para Windows
+
+            | Formato | Uso |
+            |---|---|
+            | `Setup.exe` | Instalador — recomendado |
+            | `portable.exe` | Portátil — executar sem instalar |
+
+            ### Instalação rápida
+
+            ```bash
+            # Fedora / RHEL / openSUSE
+            sudo dnf install ./unit-mail-*.x86_64.rpm
+
+            # Debian / Ubuntu
+            sudo apt install ./unit-mail_*_amd64.deb
+            ```
+
   windows:
     name: Windows (NSIS + portable)
-    if: false
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -78,3 +108,36 @@ jobs:
           files: |
             release/*.exe
             release/*.blockmap
+          # Mesmo corpo do job Linux — o primeiro a terminar cria a Release,
+          # e sem isso ela poderia nascer sem notas.
+          body: |
+            ## Unit Mail ${{ github.ref_name }}
+
+            ⚠️ Versão **Beta** — em fase de testes. Reporte problemas em Issues.
+
+            ### Pacotes para Linux
+
+            | Formato | Distribuições |
+            |---|---|
+            | `.AppImage` | Qualquer distro (executável direto) |
+            | `.deb` | Debian, Ubuntu, Mint e derivados |
+            | `.rpm` | Fedora, RHEL, openSUSE |
+            | `.pacman` | Arch e derivados |
+            | `.tar.gz` | Portátil — descompactar e executar |
+
+            ### Pacotes para Windows
+
+            | Formato | Uso |
+            |---|---|
+            | `Setup.exe` | Instalador — recomendado |
+            | `portable.exe` | Portátil — executar sem instalar |
+
+            ### Instalação rápida
+
+            ```bash
+            # Fedora / RHEL / openSUSE
+            sudo dnf install ./unit-mail-*.x86_64.rpm
+
+            # Debian / Ubuntu
+            sudo apt install ./unit-mail_*_amd64.deb
+            ```

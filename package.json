@@ -1,8 +1,8 @@
 {
   "name": "unit-mail",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "productName": "Unit Mail",
-  "description": "Cliente de email estilo Outlook 2016 para Linux com leitura de arquivos PST",
+  "description": "Cliente de email estilo Outlook 2016 para Linux e Windows com leitura de arquivos PST",
   "license": "GPL-3.0-only",
   "author": "Roger Oliveira",
   "keywords": [
@@ -10,6 +10,7 @@
     "pst",
     "outlook",
     "linux",
+    "windows",
     "fedora",
     "electron",
     "pop3",

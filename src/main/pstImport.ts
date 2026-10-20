@@ -1,6 +1,7 @@
 import { createLocalStore } from './localStore';
 import { sourceManager } from './sourceManager';
 import { PstService } from './pstService';
+import { dedupContains, dedupNote } from './ruleEngine';
 import type { FolderNode, MailSource } from '../shared/types';
 import { safeFsName } from '../shared/fsName';
 
@@ -9,6 +10,8 @@ export interface MigrateProgress {
   currentFolder: string;
   done: number;
   total: number;
+  /** Mensagens puladas por já existirem no destino (dedupe por Message-ID). */
+  skipped?: number;
 }
 
 /** Mesma sanitização usada por PstService.createArchiveFolder — mantém os ids previsíveis. */
@@ -67,6 +70,7 @@ export async function migratePstToLocalStore(
   onProgress({ phase: 'folders', currentFolder: '', done: 0, total });
 
   let done = 0;
+  let skipped = 0;
   // Segunda passada: recria a hierarquia de pastas e copia os itens.
   const walk = async (nodes: FolderNode[], destParentArc: string | null) => {
     for (const node of nodes) {
@@ -76,6 +80,10 @@ export async function migratePstToLocalStore(
       // nome (ex.: "Caixa de Entrada"), os itens simplesmente se juntam.
       destSvc.createArchiveFolder(clean, destParentArc ? `arc:${destParentArc}` : null);
 
+      // Diretório da pasta de destino — para o dedupe por Message-ID/hash.
+      // Reimportar o mesmo PST (ou um PST que compartilha mensagens com a
+      // base) não cria cópias duplicadas.
+      const destDir = destSvc.writableDirFor(destArcId);
       const count = srcSvc.getItemCount(node.id);
       const pageSize = 100;
       for (let offset = 0; offset < count; offset += pageSize) {
@@ -83,13 +91,18 @@ export async function migratePstToLocalStore(
         for (const item of items) {
           try {
             const raw = await srcSvc.exportItemEml(node.id, item.index);
-            await destSvc.importItemEml(destArcId, raw, item.isRead);
+            if (destDir && (await dedupContains(destDir, raw))) {
+              skipped++;
+            } else {
+              const name = await destSvc.importItemEml(destArcId, raw, item.isRead);
+              if (destDir) await dedupNote(destDir, name, raw);
+            }
           } catch {
             // item corrompido/ilegível — pula, não interrompe a migração
           }
           done++;
           if (done % 20 === 0 || done === total) {
-            onProgress({ phase: 'items', currentFolder: node.name, done, total });
+            onProgress({ phase: 'items', currentFolder: node.name, done, total, skipped });
           }
         }
       }
@@ -98,6 +111,6 @@ export async function migratePstToLocalStore(
   };
   await walk(tree, null);
 
-  onProgress({ phase: 'done', currentFolder: '', done, total });
+  onProgress({ phase: 'done', currentFolder: '', done, total, skipped });
   return destInfo;
 }

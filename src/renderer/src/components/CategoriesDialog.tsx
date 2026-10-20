@@ -1,5 +1,6 @@
 import React from 'react';
 import { Icon } from '../icons';
+import { t, useLang } from '../i18n';
 import type { MailCategory } from '../../../shared/types';
 
 /** Paleta de cores do Outlook (subconjunto das 25 cores de categoria). */
@@ -17,6 +18,7 @@ interface Props {
 /** Diálogo "Todas as Categorias" — cria, renomeia, muda a cor e exclui
  *  categorias da lista-mestre, como o diálogo homônimo do Outlook. */
 export function CategoriesDialog({ cats, onSave, onClose }: Props) {
+  useLang();
   const [list, setList] = React.useState<MailCategory[]>(cats);
   /** Linha com a paleta de cores aberta. */
   const [colorEdit, setColorEdit] = React.useState<string | null>(null);
@@ -28,7 +30,7 @@ export function CategoriesDialog({ cats, onSave, onClose }: Props) {
     const id = `cat-${Date.now().toString(36)}`;
     const used = new Set(list.map((c) => c.color));
     const free = PALETTE.find((p) => !used.has(p)) ?? PALETTE[list.length % PALETTE.length];
-    setList((l) => [...l, { id, name: 'Nova categoria', color: free }]);
+    setList((l) => [...l, { id, name: t('Nova categoria'), color: free }]);
     setColorEdit(null);
   };
 
@@ -49,9 +51,9 @@ export function CategoriesDialog({ cats, onSave, onClose }: Props) {
       >
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <strong style={{ fontSize: 14 }}>
-            <Icon name="flag" size={15} /> Todas as Categorias
+            <Icon name="flag" size={15} /> {t('Todas as Categorias')}
           </strong>
-          <button className="set-close" onClick={onClose} title="Fechar">
+          <button className="set-close" onClick={onClose} title={t('Fechar')}>
             <Icon name="close" size={15} />
           </button>
         </div>
@@ -62,7 +64,7 @@ export function CategoriesDialog({ cats, onSave, onClose }: Props) {
                 <span
                   className="cat-swatch"
                   style={{ background: c.color }}
-                  title="Cor da categoria — clique para trocar"
+                  title={t('Cor da categoria — clique para trocar')}
                   onClick={(e) => {
                     e.stopPropagation();
                     setColorEdit(colorEdit === c.id ? null : c.id);
@@ -75,7 +77,7 @@ export function CategoriesDialog({ cats, onSave, onClose }: Props) {
                 />
                 <button
                   className="btn-ghost danger cat-del"
-                  title="Excluir categoria"
+                  title={t('Excluir categoria')}
                   onClick={() => del(c.id)}
                 >
                   <Icon name="delete" size={13} />
@@ -100,12 +102,12 @@ export function CategoriesDialog({ cats, onSave, onClose }: Props) {
             </div>
           ))}
           {list.length === 0 && (
-            <div className="cat-empty">Nenhuma categoria — clique em "Nova" para criar.</div>
+            <div className="cat-empty">{t('Nenhuma categoria — clique em "Nova" para criar.')}</div>
           )}
         </div>
         <div className="cats-actions">
           <button className="btn" onClick={addCat}>
-            <Icon name="new" size={13} /> Nova
+            <Icon name="new" size={13} /> {t('Nova')}
           </button>
           <span style={{ flex: 1 }} />
           <button
@@ -117,7 +119,7 @@ export function CategoriesDialog({ cats, onSave, onClose }: Props) {
             OK
           </button>
           <button className="btn" onClick={onClose}>
-            Cancelar
+            {t('Cancelar')}
           </button>
         </div>
       </div>

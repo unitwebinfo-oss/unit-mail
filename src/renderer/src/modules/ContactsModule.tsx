@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { locale, t, useLang } from '../i18n';
 import type { FolderNode, ItemSummary } from '../../../shared/types';
 
 interface ContactsModuleProps {
@@ -15,6 +16,7 @@ function initials(name: string): string {
 }
 
 export function ContactsModule({ folder, items, selectedIndex, onSelect }: ContactsModuleProps) {
+  useLang();
   const [filter, setFilter] = useState('');
   const filtered = filter
     ? items.filter(
@@ -26,7 +28,7 @@ export function ContactsModule({ folder, items, selectedIndex, onSelect }: Conta
     : items;
 
   const sorted = [...filtered].sort((a, b) =>
-    (a.contactDisplayName || a.subject).localeCompare(b.contactDisplayName || b.subject, 'pt-BR'),
+    (a.contactDisplayName || a.subject).localeCompare(b.contactDisplayName || b.subject, locale()),
   );
 
   return (
@@ -35,16 +37,16 @@ export function ContactsModule({ folder, items, selectedIndex, onSelect }: Conta
         <div className="search-bar">
           <input
             type="search"
-            placeholder="Pesquisar contatos…"
+            placeholder={t('Pesquisar contatos…')}
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
           />
           <span className="scope">
-            {sorted.length} contato(s){folder ? ` em ${folder.name}` : ''}
+            {t('{n} contato(s)', { n: sorted.length })}{folder ? t(' em {folder}', { folder: folder.name }) : ''}
           </span>
         </div>
         <div className="contact-grid">
-          {sorted.length === 0 && <div className="empty-list">Nenhum contato nesta pasta</div>}
+          {sorted.length === 0 && <div className="empty-list">{t('Nenhum contato nesta pasta')}</div>}
           {sorted.map((c) => (
             <div
               key={c.index}

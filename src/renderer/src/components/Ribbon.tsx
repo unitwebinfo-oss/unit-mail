@@ -1,8 +1,43 @@
 import React, { useEffect, useState } from 'react';
 import { Icon } from '../icons';
+import { t, useLang } from '../i18n';
 import type { AccountConfig, MailCategory, ModuleId } from '../../../shared/types';
 
 export type ReadingPaneLayout = 'right' | 'bottom' | 'off';
+
+/** Paleta dos ícones da barra (estilo Fluent) — cada ação tem sua cor de acento. */
+const IC: Record<string, string> = {
+  envelope: '#0078d4',
+  mail: '#0078d4',
+  new: '#107c10',
+  junk: '#ca5010',
+  delete: '#d13438',
+  trash: '#d13438',
+  archive: '#8764b8',
+  reply: '#0078d4',
+  replyAll: '#038387',
+  forward: '#107c10',
+  flag: '#e81123',
+  refresh: '#038387',
+  printer: '#69797e',
+  sendReceive: '#0078d4',
+  download: '#038387',
+  sent: '#107c10',
+  calendar: '#0078d4',
+  contact: '#e3008c',
+  task: '#8764b8',
+  folder: '#eaa300',
+  open: '#eaa300',
+  journal: '#69797e',
+  close: '#d13438',
+  settings: '#69797e',
+  pen: '#107c10',
+  note: '#eaa300',
+};
+
+const Ic = ({ name, size }: { name: string; size?: number }) => (
+  <Icon name={name} size={size} color={IC[name]} />
+);
 
 /** Links exibidos na tela Ajuda — preencher quando o repositório/site estiver no ar. */
 const APP_LINKS = {
@@ -30,6 +65,8 @@ interface RibbonProps {
   onForward: () => void;
   onSendReceive: () => void;
   onSyncAccount: (accountId: string) => void;
+  /** Abre o diálogo "Progresso de envio/recebimento" (não dispara o sync). */
+  onShowProgress: () => void;
   onLayoutChange: (l: ReadingPaneLayout) => void;
   /** Excluir o item selecionado (só itens locais são removidos de verdade). */
   onDeleteItem: () => void;
@@ -75,7 +112,7 @@ function Group({ label, children }: { label: string; children: React.ReactNode }
   return (
     <div className="ribbon-group">
       <div className="ribbon-buttons">{children}</div>
-      <div className="ribbon-group-label">{label}</div>
+      <div className="ribbon-group-label">{t(label)}</div>
     </div>
   );
 }
@@ -94,9 +131,9 @@ function BigBtn({
   title?: string;
 }) {
   return (
-    <button className="ribbon-btn" onClick={onClick} disabled={disabled} title={title ?? label}>
-      <Icon name={icon} />
-      <span>{label}</span>
+    <button className="ribbon-btn" onClick={onClick} disabled={disabled} title={t(title ?? label)}>
+      <Ic name={icon} />
+      <span>{t(label)}</span>
     </button>
   );
 }
@@ -115,14 +152,15 @@ function SmallBtn({
   title?: string;
 }) {
   return (
-    <button className="ribbon-btn small" onClick={onClick} disabled={disabled} title={title ?? label}>
-      <Icon name={icon} />
-      <span>{label}</span>
+    <button className="ribbon-btn small" onClick={onClick} disabled={disabled} title={t(title ?? label)}>
+      <Ic name={icon} />
+      <span>{t(label)}</span>
     </button>
   );
 }
 
 export function Ribbon(props: RibbonProps) {
+  useLang();
   const [tab, setTab] = useState<TabId>('inicio');
   const [syncMin, setSyncMin] = useState(30);
   const [newMenu, setNewMenu] = useState(false);
@@ -147,7 +185,7 @@ export function Ribbon(props: RibbonProps) {
   const {
     module, pstOpen, hasAccounts, canReply, accounts, rpLayout,
     onRefresh, onNew, onNewAppt, onNewContact, onNewTask, onReply, onReplyAll, onForward,
-    onSendReceive, onSyncAccount, onLayoutChange, onDeleteItem, onMoveItemTo,
+    onSendReceive, onSyncAccount, onShowProgress, onLayoutChange, onDeleteItem, onMoveItemTo,
     onOpenSettingsTab,
     selFolder, folderTargets,
     onFolderNew, onFolderRename, onFolderDelete, onFolderCopy, onFolderMoveTo,
@@ -174,13 +212,13 @@ export function Ribbon(props: RibbonProps) {
       }}
     >
       <div className="ribbon-tabs">
-        {tabs.map((t) => (
+        {tabs.map((tb) => (
           <div
-            key={t.id}
-            className={`ribbon-tab ${t.file ? 'file-tab' : ''} ${tab === t.id && !t.file ? 'active' : ''}`}
-            onClick={() => setTab(t.id)}
+            key={tb.id}
+            className={`ribbon-tab ${tb.file ? 'file-tab' : ''} ${tab === tb.id && !tb.file ? 'active' : ''}`}
+            onClick={() => setTab(tb.id)}
           >
-            {t.label}
+            {t(tb.label)}
           </div>
         ))}
       </div>
@@ -189,34 +227,34 @@ export function Ribbon(props: RibbonProps) {
       {tab === 'arquivo' && (
         <div className="backstage" onClick={(e) => e.stopPropagation()}>
           <div className="bs-side">
-            <button className="bs-back" onClick={() => setTab('inicio')} title="Voltar">
+            <button className="bs-back" onClick={() => setTab('inicio')} title={t('Voltar')}>
               <Icon name="reply" size={18} />
             </button>
             <button
               className={`bs-item ${bsPage === 'info' ? 'active' : ''}`}
               onClick={() => setBsPage('info')}
             >
-              <Icon name="contact" size={16} /> Informações
+              <Icon name="contact" size={16} /> {t('Informações')}
             </button>
             <button
               className={`bs-item ${bsPage === 'open' ? 'active' : ''}`}
               onClick={() => setBsPage('open')}
             >
-              <Icon name="open" size={16} /> Abrir e Exportar
+              <Icon name="open" size={16} /> {t('Abrir e Exportar')}
             </button>
             <div className="bs-sep" />
-            <button className="bs-item" disabled={!canReply} onClick={onSaveAs} title={canReply ? 'Salvar a mensagem aberta como .eml' : 'Abra uma mensagem para salvar'}>
-              <Icon name="archive" size={16} /> Salvar como
+            <button className="bs-item" disabled={!canReply} onClick={onSaveAs} title={canReply ? t('Salvar a mensagem aberta como .eml') : t('Abra uma mensagem para salvar')}>
+              <Icon name="archive" size={16} /> {t('Salvar como')}
             </button>
-            <button className="bs-item" disabled={!canReply} onClick={onPrint} title={canReply ? 'Imprimir a mensagem aberta' : 'Abra uma mensagem para imprimir'}>
-              <Icon name="printer" size={16} /> Imprimir
+            <button className="bs-item" disabled={!canReply} onClick={onPrint} title={canReply ? t('Imprimir a mensagem aberta') : t('Abra uma mensagem para imprimir')}>
+              <Icon name="printer" size={16} /> {t('Imprimir')}
             </button>
             <div className="bs-sep" />
             <button
               className={`bs-item ${bsPage === 'help' ? 'active' : ''}`}
               onClick={() => setBsPage('help')}
             >
-              <Icon name="envelope" size={16} /> Ajuda
+              <Icon name="envelope" size={16} /> {t('Ajuda')}
             </button>
             <div className="bs-sep" />
             <button
@@ -225,22 +263,22 @@ export function Ribbon(props: RibbonProps) {
                 setTab('inicio');
                 onOpenSettingsTab('geral');
               }}
-              title="Opções e preferências do aplicativo"
+              title={t('Opções e preferências do aplicativo')}
             >
-              <Icon name="settings" size={16} /> Configurações
+              <Icon name="settings" size={16} /> {t('Configurações')}
             </button>
           </div>
           <div className="bs-main">
             {bsPage === 'info' && (
               <>
-                <h1>Informações sobre Contas</h1>
+                <h1>{t('Informações sobre Contas')}</h1>
                 <select
                   className="bs-account"
                   disabled={accounts.length === 0}
                   value={bsAccount || accounts[0]?.id || ''}
                   onChange={(e) => setBsAccount(e.target.value)}
                 >
-                  {accounts.length === 0 && <option>Nenhuma conta configurada</option>}
+                  {accounts.length === 0 && <option>{t('Nenhuma conta configurada')}</option>}
                   {accounts.map((a) => (
                     <option key={a.id} value={a.id}>
                       {a.email} — {a.protocol.toUpperCase()}
@@ -254,7 +292,7 @@ export function Ribbon(props: RibbonProps) {
                     onOpenSettingsTab('email');
                   }}
                 >
-                  + Adicionar Conta
+                  {t('+ Adicionar Conta')}
                 </button>
                 <div className="bs-tiles">
                   <button
@@ -265,10 +303,10 @@ export function Ribbon(props: RibbonProps) {
                       onOpenSettingsTab('email', bsAccount || accounts[0]?.id);
                     }}
                   >
-                    <Icon name="contact" size={28} />
+                    <Ic name="contact" size={28} />
                     <div>
-                      <strong>Configurações de Conta</strong>
-                      <span>Altere configurações para esta conta ou configure mais conexões.</span>
+                      <strong>{t('Configurações de Conta')}</strong>
+                      <span>{t('Altere configurações para esta conta ou configure mais conexões.')}</span>
                     </div>
                   </button>
                   <button
@@ -278,10 +316,10 @@ export function Ribbon(props: RibbonProps) {
                       onOpenSettingsTab('data');
                     }}
                   >
-                    <Icon name="archive" size={28} />
+                    <Ic name="archive" size={28} />
                     <div>
-                      <strong>Configurações de Caixa de Correio</strong>
-                      <span>Gerencie arquivos de dados, bases locais e onde as mensagens são entregues.</span>
+                      <strong>{t('Configurações de Caixa de Correio')}</strong>
+                      <span>{t('Gerencie arquivos de dados, bases locais e onde as mensagens são entregues.')}</span>
                     </div>
                   </button>
                   <button
@@ -291,21 +329,21 @@ export function Ribbon(props: RibbonProps) {
                       onOpenSettingsTab('rules');
                     }}
                   >
-                    <Icon name="flag" size={28} />
+                    <Ic name="flag" size={28} />
                     <div>
-                      <strong>Gerenciar Regras e Alertas</strong>
-                      <span>Use Regras e Alertas para organizar as mensagens de email de entrada.</span>
+                      <strong>{t('Gerenciar Regras e Alertas')}</strong>
+                      <span>{t('Use Regras e Alertas para organizar as mensagens de email de entrada.')}</span>
                     </div>
                   </button>
                 </div>
                 <div className="bs-foot">
-                  {props.sourcesCount} base(s) de dados aberta(s)
+                  {t('{n} base(s) de dados aberta(s)', { n: props.sourcesCount })}
                 </div>
               </>
             )}
             {bsPage === 'open' && (
               <>
-                <h1>Abrir</h1>
+                <h1>{t('Abrir')}</h1>
                 <div className="bs-tiles">
                   <button
                     className="bs-tile"
@@ -314,12 +352,11 @@ export function Ribbon(props: RibbonProps) {
                       onOpenSettingsTab('data', undefined, 'importPst');
                     }}
                   >
-                    <Icon name="open" size={28} />
+                    <Ic name="open" size={28} />
                     <div>
-                      <strong>Importar .pst (Outlook)</strong>
+                      <strong>{t('Importar .pst (Outlook)')}</strong>
                       <span>
-                        Traz todas as pastas e mensagens de um arquivo .pst para uma base do
-                        Unit Mail — o arquivo original nunca é alterado.
+                        {t('Traz todas as pastas e mensagens de um arquivo .pst para uma base do Unit Mail — o arquivo original nunca é alterado.')}
                       </span>
                     </div>
                   </button>
@@ -330,12 +367,11 @@ export function Ribbon(props: RibbonProps) {
                       onOpenSettingsTab('data', undefined, 'importTb');
                     }}
                   >
-                    <Icon name="download" size={28} />
+                    <Ic name="download" size={28} />
                     <div>
-                      <strong>Importar do Thunderbird</strong>
+                      <strong>{t('Importar do Thunderbird')}</strong>
                       <span>
-                        Traz todas as pastas e mensagens do perfil do Thunderbird instalado
-                        neste computador — o perfil original nunca é alterado.
+                        {t('Traz todas as pastas e mensagens do perfil do Thunderbird instalado neste computador — o perfil original nunca é alterado.')}
                       </span>
                     </div>
                   </button>
@@ -346,34 +382,31 @@ export function Ribbon(props: RibbonProps) {
                       onOpenSettingsTab('data');
                     }}
                   >
-                    <Icon name="folder" size={28} />
+                    <Ic name="folder" size={28} />
                     <div>
-                      <strong>Novo Arquivo de Dados</strong>
-                      <span>Crie uma base local gravável para receber e organizar mensagens.</span>
+                      <strong>{t('Novo Arquivo de Dados')}</strong>
+                      <span>{t('Crie uma base local gravável para receber e organizar mensagens.')}</span>
                     </div>
                   </button>
                 </div>
 
-                <h1 style={{ marginTop: 32 }}>Exportar</h1>
+                <h1 style={{ marginTop: 32 }}>{t('Exportar')}</h1>
                 <div className="bs-tiles">
                   <button className="bs-tile" onClick={onExportBackup}>
-                    <Icon name="download" size={28} />
+                    <Ic name="download" size={28} />
                     <div>
-                      <strong>Exportar configurações (backup)</strong>
+                      <strong>{t('Exportar configurações (backup)')}</strong>
                       <span>
-                        Salva contas, regras e assinaturas num arquivo .json para levar para outra
-                        máquina. O arquivo contém as senhas — guarde com segurança.
+                        {t('Salva contas, regras e assinaturas num arquivo .json para levar para outra máquina. O arquivo contém as senhas — guarde com segurança.')}
                       </span>
                     </div>
                   </button>
                   <button className="bs-tile" onClick={onImportBackup}>
-                    <Icon name="archive" size={28} />
+                    <Ic name="archive" size={28} />
                     <div>
-                      <strong>Importar configurações</strong>
+                      <strong>{t('Importar configurações')}</strong>
                       <span>
-                        Restaura contas, regras e assinaturas de um backup. Processo recomendado:
-                        primeiro adicione os arquivos de dados, depois importe o backup e re-vincule
-                        as contas em Configurações → Email.
+                        {t('Restaura contas, regras e assinaturas de um backup. Processo recomendado: primeiro adicione os arquivos de dados, depois importe o backup e re-vincule as contas em Configurações → Email.')}
                       </span>
                     </div>
                   </button>
@@ -385,7 +418,7 @@ export function Ribbon(props: RibbonProps) {
                 {/* Hero — identidade do app */}
                 <div className="help-hero">
                   <div className="help-hero-icon">
-                    <Icon name="logo" size={40} />
+                    <Ic name="logo" size={40} />
                   </div>
                   <div className="help-hero-info">
                     <div className="help-hero-name">
@@ -403,7 +436,7 @@ export function Ribbon(props: RibbonProps) {
 
                 {/* Aviso único e importante */}
                 <div className="help-note">
-                  <Icon name="archive" size={16} />
+                  <Ic name="archive" size={16} />
                   <span>
                     Arquivos <strong>.pst</strong> são abertos <strong>somente para leitura</strong> —
                     o original nunca é alterado. Para excluir e organizar de verdade, use{' '}
@@ -480,8 +513,8 @@ export function Ribbon(props: RibbonProps) {
                         setNewMenu((v) => !v);
                       }}
                     >
-                      <Icon name="new" />
-                      <span>Novos Itens ▾</span>
+                      <Ic name="new" />
+                      <span>{t('Novos Itens')} ▾</span>
                     </button>
                     {newMenu && (
                       <div className="ribbon-menu" onClick={(e) => e.stopPropagation()}>
@@ -492,7 +525,7 @@ export function Ribbon(props: RibbonProps) {
                           }}
                           disabled={!hasAccounts}
                         >
-                          <Icon name="envelope" size={14} /> Novo Email
+                          <Ic name="envelope" size={14} /> {t('Novo Email')}
                         </button>
                         <button
                           onClick={() => {
@@ -501,7 +534,7 @@ export function Ribbon(props: RibbonProps) {
                           }}
                           disabled={!props.sourcesCount}
                         >
-                          <Icon name="calendar" size={14} /> Novo Compromisso
+                          <Ic name="calendar" size={14} /> {t('Novo Compromisso')}
                         </button>
                         <button
                           onClick={() => {
@@ -510,7 +543,7 @@ export function Ribbon(props: RibbonProps) {
                           }}
                           disabled={!props.sourcesCount}
                         >
-                          <Icon name="contact" size={14} /> Novo Contato
+                          <Ic name="contact" size={14} /> {t('Novo Contato')}
                         </button>
                         <button
                           onClick={() => {
@@ -519,7 +552,7 @@ export function Ribbon(props: RibbonProps) {
                           }}
                           disabled={!props.sourcesCount}
                         >
-                          <Icon name="task" size={14} /> Nova Tarefa
+                          <Ic name="task" size={14} /> {t('Nova Tarefa')}
                         </button>
                       </div>
                     )}
@@ -527,16 +560,12 @@ export function Ribbon(props: RibbonProps) {
                 </div>
               </Group>
               <Group label="Excluir">
-                <div className="ribbon-col">
-                  <SmallBtn icon="envelope" label="Ignorar" disabled title="Em breve" />
-                  <SmallBtn icon="refresh" label="Limpar" disabled title="Em breve" />
-                  <SmallBtn
-                    icon="junk"
-                    label="Lixo Eletrônico"
-                    onClick={() => onMoveItemTo('Lixo eletrônico')}
-                    disabled={!canReply}
-                  />
-                </div>
+                <BigBtn
+                  icon="junk"
+                  label="Lixo Eletrônico"
+                  onClick={() => onMoveItemTo('Lixo eletrônico')}
+                  disabled={!canReply}
+                />
                 <BigBtn icon="delete" label="Excluir" onClick={onDeleteItem} disabled={!canReply} />
                 <BigBtn
                   icon="archive"
@@ -557,16 +586,16 @@ export function Ribbon(props: RibbonProps) {
                     disabled={!canReply}
                     title={
                       canReply
-                        ? 'Atribuir categorias coloridas aos itens selecionados'
-                        : 'Abra uma mensagem para categorizar'
+                        ? t('Atribuir categorias coloridas aos itens selecionados')
+                        : t('Abra uma mensagem para categorizar')
                     }
                     onClick={(e) => {
                       e.stopPropagation();
                       setCatsMenu((v) => !v);
                     }}
                   >
-                    <Icon name="flag" />
-                    <span>Categorizar ▾</span>
+                    <Ic name="flag" />
+                    <span>{t('Categorizar')} ▾</span>
                   </button>
                   {catsMenu && (
                     <div className="ribbon-menu" onClick={(e) => e.stopPropagation()}>
@@ -589,7 +618,7 @@ export function Ribbon(props: RibbonProps) {
                           onCatsManage();
                         }}
                       >
-                        <Icon name="flag" size={14} /> Todas as Categorias…
+                        <Ic name="flag" size={14} /> {t('Todas as Categorias…')}
                       </button>
                     </div>
                   )}
@@ -654,13 +683,13 @@ export function Ribbon(props: RibbonProps) {
                     setGrpMenu((v) => !v);
                   }}
                 >
-                  <Icon name="envelope" />
-                  <span>Grupos de Envio/Recebimento ▾</span>
+                  <Ic name="envelope" />
+                  <span>{t('Grupos de Envio/Recebimento')} ▾</span>
                 </button>
                 {grpMenu && (
                   <div className="ribbon-menu" onClick={(e) => e.stopPropagation()}>
                     {accounts.length === 0 && (
-                      <button disabled>Nenhuma conta configurada</button>
+                      <button disabled>{t('Nenhuma conta configurada')}</button>
                     )}
                     {accounts.map((a) => (
                       <button
@@ -670,12 +699,12 @@ export function Ribbon(props: RibbonProps) {
                           onSyncAccount(a.id);
                         }}
                       >
-                        <Icon name="envelope" size={14} /> {a.email}
+                        <Ic name="envelope" size={14} /> {a.email}
                       </button>
                     ))}
                     {accounts.length > 0 && <div className="ribbon-menu-sep" />}
                     <div className="ribbon-menu-row">
-                      Sincronizar a cada
+                      {t('Sincronizar a cada')}
                       <select
                         value={syncMin}
                         onChange={(e) => {
@@ -684,13 +713,12 @@ export function Ribbon(props: RibbonProps) {
                           window.outlook.setSyncInterval(v).catch(() => {});
                         }}
                       >
-                        <option value={0}>desligado</option>
-                        <option value={1}>1 min</option>
-                        <option value={5}>5 min</option>
-                        <option value={10}>10 min</option>
-                        <option value={15}>15 min</option>
-                        <option value={30}>30 min</option>
-                        <option value={60}>60 min</option>
+                        <option value={0}>{t('desligado')}</option>
+                        {[1, 5, 10, 15, 30, 60].map((v) => (
+                          <option key={v} value={v}>
+                            {t('{n} min', { n: v })}
+                          </option>
+                        ))}
                       </select>
                     </div>
                   </div>
@@ -699,8 +727,7 @@ export function Ribbon(props: RibbonProps) {
             </div>
           </Group>
           <Group label="Baixar">
-            <BigBtn icon="journal" label="Mostrar Progresso" onClick={onSendReceive} disabled={!hasAccounts} />
-            <BigBtn icon="close" label="Cancelar Tudo" disabled title="Em breve" />
+            <BigBtn icon="journal" label="Mostrar Progresso" onClick={onShowProgress} disabled={!hasAccounts} />
           </Group>
         </div>
       )}
@@ -717,7 +744,6 @@ export function Ribbon(props: RibbonProps) {
                 setPastaAction('new');
               }}
             />
-            <BigBtn icon="search" label="Nova Pasta de Pesquisa" disabled title="Em breve" />
           </Group>
           <Group label="Ações">
             <BigBtn
@@ -774,25 +800,27 @@ export function Ribbon(props: RibbonProps) {
             <div className="ctx-menu ribbon-pop" onClick={(e) => e.stopPropagation()}>
               {pastaAction === 'move' ? (
                 <div className="ctx-move">
-                  <div className="ctx-move-title">Mover "{selFolder?.name}" para:</div>
-                  {folderTargets.map((t) => (
+                  <div className="ctx-move-title">
+                    {t('Mover "{nome}" para:', { nome: selFolder?.name || '' })}
+                  </div>
+                  {folderTargets.map((ft) => (
                     <button
-                      key={t.id ?? '__root'}
+                      key={ft.id ?? '__root'}
                       onClick={() => {
                         setPastaAction(null);
-                        onFolderMoveTo(t.id);
+                        onFolderMoveTo(ft.id);
                       }}
                     >
-                      {t.label}
+                      {ft.label}
                     </button>
                   ))}
                   <div className="ctx-sep" />
-                  <button onClick={() => setPastaAction(null)}>Cancelar</button>
+                  <button onClick={() => setPastaAction(null)}>{t('Cancelar')}</button>
                 </div>
               ) : (
                 <div className="ctx-input">
                   <label>
-                    {pastaAction === 'new' ? 'Nome da nova pasta' : 'Novo nome da pasta'}
+                    {pastaAction === 'new' ? t('Nome da nova pasta') : t('Novo nome da pasta')}
                   </label>
                   <input
                     autoFocus
@@ -809,7 +837,7 @@ export function Ribbon(props: RibbonProps) {
                     }}
                   />
                   <div className="ctx-input-actions">
-                    <button onClick={() => setPastaAction(null)}>Cancelar</button>
+                    <button onClick={() => setPastaAction(null)}>{t('Cancelar')}</button>
                     <button
                       className="primary"
                       onClick={() => {

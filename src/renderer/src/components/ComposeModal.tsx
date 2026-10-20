@@ -1,6 +1,8 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Icon } from '../icons';
 import { attachIcon } from './ReadingPane';
+import { applyTheme } from '../utils';
+import { t, useLang } from '../i18n';
 import type { AccountConfig, ComposeInput } from '../../../shared/types';
 
 export interface ComposeDraft {
@@ -25,6 +27,8 @@ interface ComposeModalProps {
   accounts: AccountConfig[];
   onClose: () => void;
   onSent: () => void;
+  /** Janela separada real (sem overlay, ocupa a janela inteira do SO). */
+  windowed?: boolean;
 }
 
 const inputStyle: React.CSSProperties = {
@@ -231,7 +235,7 @@ function Tb({
     <button
       type="button"
       className="tb-btn"
-      title={title}
+      title={t(title)}
       onMouseDown={(e) => {
         e.preventDefault(); // não perde a seleção do editor
         onClick();
@@ -242,7 +246,8 @@ function Tb({
   );
 }
 
-export function ComposeModal({ draft, accounts, onClose, onSent }: ComposeModalProps) {
+export function ComposeModal({ draft, accounts, onClose, onSent, windowed }: ComposeModalProps) {
+  useLang();
   const [accountId, setAccountId] = useState(draft.accountId || accounts[0]?.id || '');
   const [to, setTo] = useState(draft.to);
   const [cc, setCc] = useState(draft.cc || '');
@@ -320,7 +325,7 @@ export function ComposeModal({ draft, accounts, onClose, onSent }: ComposeModalP
 
   const send = async () => {
     if (!accountId) {
-      setError('Selecione uma conta de envio.');
+      setError(t('Selecione uma conta de envio.'));
       return;
     }
     if (!to.trim()) {
@@ -358,30 +363,33 @@ export function ComposeModal({ draft, accounts, onClose, onSent }: ComposeModalP
     }
   };
 
-  return (
-    <div className="modal-overlay" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div
-        className={`compose-window ${full ? 'full' : ''}`}
-        onClick={(e) => e.stopPropagation()}
-      >
+  const inner = (
+    <div
+      className={`compose-window ${windowed ? 'win' : full ? 'full' : ''}`}
+      onClick={(e) => e.stopPropagation()}
+    >
+      {/* Janela separada já mostra o título na faixa azul do SO — o
+          cabeçalho interno (e seus botões) só faz sentido no modo modal. */}
+      {!windowed && (
         <div className="compose-title">
-          <h2>{kind === 'reply' ? 'Responder' : kind === 'forward' ? 'Encaminhar' : 'Novo Email'}</h2>
+          <h2>{kind === 'reply' ? t('Responder') : kind === 'forward' ? t('Encaminhar') : t('Novo Email')}</h2>
           <span style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
             <span
               className="close-x"
-              title={full ? 'Restaurar tamanho' : 'Maximizar janela'}
+              title={full ? t('Restaurar tamanho') : t('Maximizar janela')}
               onClick={() => setFull((f) => !f)}
             >
               {full ? '🗗' : '🗖'}
             </span>
-            <span className="close-x danger" title="Fechar" onClick={onClose}>
+            <span className="close-x danger" title={t('Fechar')} onClick={onClose}>
               <Icon name="close" size={16} />
             </span>
           </span>
         </div>
+      )}
         <div className="compose-fields">
           <div className="field-row">
-            <label>De</label>
+            <label>{t('De')}</label>
             <select style={inputStyle} value={accountId} onChange={(e) => setAccountId(e.target.value)}>
               {accounts.map((a) => (
                 <option key={a.id} value={a.id}>
@@ -391,7 +399,7 @@ export function ComposeModal({ draft, accounts, onClose, onSent }: ComposeModalP
             </select>
           </div>
           <div className="field-row addr">
-            <label>Para</label>
+            <label>{t('Para')}</label>
             <AddrField
               value={to}
               onChange={(v) => {
@@ -441,15 +449,26 @@ export function ComposeModal({ draft, accounts, onClose, onSent }: ComposeModalP
             </div>
           )}
           <div className="field-row">
-            <label>Assunto</label>
+            <label>{t('Assunto')}</label>
             <input style={inputStyle} value={subject} onChange={(e) => setSubject(e.target.value)} />
           </div>
           {badAddrs.length > 0 && (
             <div className="addr-warn">
-              Endereço(s) com formato inválido: <b>{badAddrs.join(', ')}</b> — corrija antes de enviar.
+              {t('Endereço(s) com formato inválido:')} <b>{badAddrs.join(', ')}</b> —{' '}
+              {t('corrija antes de enviar.')}
             </div>
           )}
           <div className="compose-toolbar">
+            <button
+              type="button"
+              className="tb-attach"
+              title={t('Anexar arquivo')}
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={pickFiles}
+            >
+              <Icon name="clip" size={15} /> {t('Anexar')}
+            </button>
+            <span className="tb-sep" />
             <Tb title="Negrito" onClick={() => exec('bold')}><b>B</b></Tb>
             <Tb title="Itálico" onClick={() => exec('italic')}><i>I</i></Tb>
             <Tb title="Sublinhado" onClick={() => exec('underline')}><u>U</u></Tb>
@@ -465,7 +484,7 @@ export function ComposeModal({ draft, accounts, onClose, onSent }: ComposeModalP
               }}
               defaultValue=""
             >
-              <option value="" disabled>Fonte</option>
+              <option value="" disabled>{t('Fonte')}</option>
               {FONTS.map((f) => (
                 <option key={f} value={f} style={{ fontFamily: f }}>
                   {f}
@@ -482,12 +501,12 @@ export function ComposeModal({ draft, accounts, onClose, onSent }: ComposeModalP
               }}
               defaultValue=""
             >
-              <option value="" disabled>Tamanho</option>
-              <option value="2">Pequena</option>
-              <option value="3">Normal</option>
-              <option value="4">Média</option>
-              <option value="5">Grande</option>
-              <option value="6">Muito grande</option>
+              <option value="" disabled>{t('Tamanho')}</option>
+              <option value="2">{t('Pequena')}</option>
+              <option value="3">{t('Normal')}</option>
+              <option value="4">{t('Média')}</option>
+              <option value="5">{t('Grande')}</option>
+              <option value="6">{t('Muito grande')}</option>
             </select>
             <input
               type="color"
@@ -526,41 +545,125 @@ export function ComposeModal({ draft, accounts, onClose, onSent }: ComposeModalP
                 }}
                 placeholder="https://…"
               />
-              <button className="btn btn-primary" onClick={applyLink}>Aplicar</button>
-              <button className="btn btn-ghost" onClick={() => setLinkMode(false)}>Cancelar</button>
+              <button className="btn btn-primary" onClick={applyLink}>{t('Aplicar')}</button>
+              <button className="btn btn-ghost" onClick={() => setLinkMode(false)}>{t('Cancelar')}</button>
             </div>
           )}
           <div ref={editorRef} className="compose-editor" contentEditable suppressContentEditableWarning />
-          <div className="compose-attach">
-            <button onClick={pickFiles} className="attach-btn">
-              <Icon name="clip" size={14} /> Anexar
-            </button>
-            {attachPaths.map((p, i) => (
-              <span key={i} className="attach-chip" title={p}>
-                <span className="attach-badge" style={{ color: attachIcon(fileName(p)).color }}>
-                  <Icon name={attachIcon(fileName(p)).icon} size={16} />
+          {attachPaths.length > 0 && (
+            <div className="compose-attach">
+              {attachPaths.map((p, i) => (
+                <span key={i} className="attach-chip" title={p}>
+                  <span className="attach-badge" style={{ color: attachIcon(fileName(p)).color }}>
+                    <Icon name={attachIcon(fileName(p)).icon} size={16} />
+                  </span>
+                  {fileName(p)}
+                  <span
+                    className="attach-x"
+                    onClick={() => setAttachPaths((prev) => prev.filter((_, j) => j !== i))}
+                  >
+                    ×
+                  </span>
                 </span>
-                {fileName(p)}
-                <span
-                  className="attach-x"
-                  onClick={() => setAttachPaths((prev) => prev.filter((_, j) => j !== i))}
-                >
-                  ×
-                </span>
-              </span>
-            ))}
-          </div>
+              ))}
+            </div>
+          )}
           {error && <div style={{ color: '#c00', fontSize: 12 }}>{error}</div>}
         </div>
         <div className="compose-footer">
           <button disabled={sending} onClick={send} className="primary-btn">
-            {sending ? 'Enviando…' : 'Enviar'}
+            {sending ? t('Enviando…') : t('Enviar')}
           </button>
           <button disabled={sending} onClick={onClose} style={inputStyle}>
-            Cancelar
+            {t('Cancelar')}
           </button>
         </div>
-      </div>
+    </div>
+  );
+
+  // Janela real do SO: sem overlay nem fechamento por clique-fora — a janela
+  // inteira É o compose (minimizar/maximizar são os controles do sistema).
+  if (windowed) return inner;
+
+  return (
+    <div className="modal-overlay" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
+      {inner}
+    </div>
+  );
+}
+
+/**
+ * Host da janela de composição separada: carrega o rascunho pendente e as
+ * contas pelo IPC, e renderiza o ComposeModal ocupando a janela inteira.
+ * A janela é criada pelo main com hash `#/compose/<id>`.
+ */
+export function ComposeHost({ draftId }: { draftId: string }) {
+  useLang();
+  const [draft, setDraft] = useState<ComposeDraft | null>(null);
+  const [accounts, setAccounts] = useState<AccountConfig[]>([]);
+  const [gone, setGone] = useState(false);
+  const [winChrome, setWinChrome] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    // Mesmo tema da janela principal — a janela de composição é um documento
+    // separado e precisa aplicar o body.dark sozinha.
+    window.outlook
+      .getTheme?.()
+      .then((t) => applyTheme(t))
+      .catch(() => {});
+    window.outlook
+      .composeGetDraft(draftId)
+      .then((d) => {
+        if (!alive) return;
+        if (!d) {
+          // Janela aberta sem rascunho (id inválido/expirado) — fecha.
+          setGone(true);
+          window.close();
+        } else {
+          setDraft({ bodyText: '', ...d } as ComposeDraft);
+        }
+      })
+      .catch(() => alive && setGone(true));
+    window.outlook
+      .listAccounts()
+      .then((a) => alive && setAccounts(a))
+      .catch(() => {});
+    window.outlook
+      .getAppInfo?.()
+      .then((i) => alive && setWinChrome(i.platform !== 'darwin'))
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [draftId]);
+
+  if (!draft || gone) return null;
+  const kind = draft.kind || 'new';
+  const winTitle =
+    kind === 'reply'
+      ? `Re: ${draft.subject.replace(/^re:\s*/i, '')}`
+      : kind === 'forward'
+        ? `Fwd: ${draft.subject.replace(/^fwd:\s*/i, '')}`
+        : draft.subject || t('Novo Email');
+  return (
+    <div className="compose-app">
+      {winChrome && (
+        <div className="win-titlebar">
+          <Icon name="envelope" size={16} />
+          <span className="win-title">{winTitle} — Unit Mail</span>
+        </div>
+      )}
+      <ComposeModal
+        windowed
+        draft={draft}
+        accounts={accounts}
+        onClose={() => window.close()}
+        onSent={() => {
+          window.outlook.composeNotifySent?.().catch(() => {});
+          window.close();
+        }}
+      />
     </div>
   );
 }

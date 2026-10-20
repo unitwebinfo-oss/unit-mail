@@ -1,8 +1,9 @@
 import React, { useState } from 'react';
 import { Icon } from '../icons';
+import { t, useLang } from '../i18n';
 import type { MailSource, NewSpecialItem } from '../../../shared/types';
 
-const TITLES: Record<NewSpecialItem['kind'], string> = {
+const TITLE_KEYS: Record<NewSpecialItem['kind'], string> = {
   appt: 'Novo Compromisso',
   contact: 'Novo Contato',
   task: 'Nova Tarefa',
@@ -33,6 +34,7 @@ export function NewItemDialog({
   onClose: () => void;
   onSave: (sourceId: string, item: NewSpecialItem) => Promise<void> | void;
 }) {
+  useLang();
   const [item, setItem] = useState<NewSpecialItem>({ kind, subject: '' });
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
@@ -45,12 +47,12 @@ export function NewItemDialog({
 
   const save = async () => {
     if (!item.subject.trim() && !(kind === 'contact' && item.contactName?.trim())) {
-      setErr(kind === 'contact' ? 'Informe o nome do contato.' : 'Informe o assunto.');
+      setErr(kind === 'contact' ? t('Informe o nome do contato.') : t('Informe o assunto.'));
       return;
     }
     if (!targetId) {
       setErr(
-        'O arquivo de dados principal não está aberto. Abra-o ou defina outro em Configurações → Arquivos de Dados.',
+        t('O arquivo de dados principal não está aberto. Abra-o ou defina outro em Configurações → Arquivos de Dados.'),
       );
       return;
     }
@@ -77,25 +79,25 @@ export function NewItemDialog({
               name={kind === 'appt' ? 'calendar' : kind === 'contact' ? 'contact' : 'task'}
               size={15}
             />{' '}
-            {TITLES[kind]}
+            {t(TITLE_KEYS[kind])}
           </strong>
-          <button className="set-close" onClick={onClose} title="Fechar">
+          <button className="set-close" onClick={onClose} title={t('Fechar')}>
             <Icon name="close" size={15} />
           </button>
         </div>
 
-        <F label="Arquivo de dados">
+        <F label={t('Arquivo de dados')}>
           <span style={{ fontSize: 12, color: target ? 'var(--text-dim)' : '#a4262c' }}>
             {target
-              ? `${target.label} (principal)`
-              : 'Arquivo de dados principal não está aberto'}
+              ? `${target.label} (${t('principal')})`
+              : t('Arquivo de dados principal não está aberto')}
           </span>
         </F>
 
         {kind === 'contact' ? (
           <>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 10 }}>
-              <F label="Nome completo">
+              <F label={t('Nome completo')}>
                 <input
                   className="inp"
                   autoFocus
@@ -105,54 +107,54 @@ export function NewItemDialog({
               </F>
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-              <F label="Nome">
+              <F label={t('Nome')}>
                 <input className="inp" value={item.givenName || ''} onChange={(e) => up({ givenName: e.target.value })} />
               </F>
-              <F label="Sobrenome">
+              <F label={t('Sobrenome')}>
                 <input className="inp" value={item.surname || ''} onChange={(e) => up({ surname: e.target.value })} />
               </F>
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-              <F label="Email">
+              <F label={t('Email')}>
                 <input className="inp" type="email" value={item.email || ''} onChange={(e) => up({ email: e.target.value })} />
               </F>
-              <F label="Email 2">
+              <F label={t('Email 2')}>
                 <input className="inp" type="email" value={item.email2 || ''} onChange={(e) => up({ email2: e.target.value })} />
               </F>
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
-              <F label="Empresa">
+              <F label={t('Empresa')}>
                 <input className="inp" value={item.company || ''} onChange={(e) => up({ company: e.target.value })} />
               </F>
-              <F label="Cargo">
+              <F label={t('Cargo')}>
                 <input className="inp" value={item.jobTitle || ''} onChange={(e) => up({ jobTitle: e.target.value })} />
               </F>
-              <F label="Departamento">
+              <F label={t('Departamento')}>
                 <input className="inp" value={item.dept || ''} onChange={(e) => up({ dept: e.target.value })} />
               </F>
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
-              <F label="Telefone comercial">
+              <F label={t('Telefone comercial')}>
                 <input className="inp" value={item.phone || ''} onChange={(e) => up({ phone: e.target.value })} />
               </F>
-              <F label="Celular">
+              <F label={t('Celular')}>
                 <input className="inp" value={item.mobile || ''} onChange={(e) => up({ mobile: e.target.value })} />
               </F>
-              <F label="Aniversário">
+              <F label={t('Aniversário')}>
                 <input className="inp" type="date" value={item.birthday || ''} onChange={(e) => up({ birthday: e.target.value })} />
               </F>
             </div>
           </>
         ) : kind === 'appt' ? (
           <>
-            <F label="Assunto">
+            <F label={t('Assunto')}>
               <input className="inp" autoFocus value={item.subject} onChange={(e) => up({ subject: e.target.value })} />
             </F>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-              <F label="Local">
+              <F label={t('Local')}>
                 <input className="inp" value={item.location || ''} onChange={(e) => up({ location: e.target.value })} />
               </F>
-              <F label="Participantes (emails, separados por ;)">
+              <F label={t('Participantes (emails, separados por ;)')}>
                 <input className="inp" value={item.attendees || ''} onChange={(e) => up({ attendees: e.target.value })} />
               </F>
             </div>
@@ -162,10 +164,10 @@ export function NewItemDialog({
                 checked={!!item.allDay}
                 onChange={(e) => up({ allDay: e.target.checked })}
               />
-              Evento de dia inteiro
+              {t('Evento de dia inteiro')}
             </label>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
-              <F label="Início">
+              <F label={t('Início')}>
                 <input
                   className="inp"
                   type={item.allDay ? 'date' : 'datetime-local'}
@@ -173,7 +175,7 @@ export function NewItemDialog({
                   onChange={(e) => up({ start: e.target.value })}
                 />
               </F>
-              <F label="Término">
+              <F label={t('Término')}>
                 <input
                   className="inp"
                   type={item.allDay ? 'date' : 'datetime-local'}
@@ -181,36 +183,36 @@ export function NewItemDialog({
                   onChange={(e) => up({ end: e.target.value })}
                 />
               </F>
-              <F label="Lembrete">
+              <F label={t('Lembrete')}>
                 <select
                   className="inp"
                   value={item.reminderMin == null ? '' : String(item.reminderMin)}
                   onChange={(e) => up({ reminderMin: e.target.value === '' ? null : Number(e.target.value) })}
                 >
-                  <option value="">Sem lembrete</option>
-                  <option value="0">Na hora</option>
-                  <option value="5">5 minutos antes</option>
-                  <option value="15">15 minutos antes</option>
-                  <option value="30">30 minutos antes</option>
-                  <option value="60">1 hora antes</option>
-                  <option value="1440">1 dia antes</option>
+                  <option value="">{t('Sem lembrete')}</option>
+                  <option value="0">{t('Na hora')}</option>
+                  <option value="5">{t('5 minutos antes')}</option>
+                  <option value="15">{t('15 minutos antes')}</option>
+                  <option value="30">{t('30 minutos antes')}</option>
+                  <option value="60">{t('1 hora antes')}</option>
+                  <option value="1440">{t('1 dia antes')}</option>
                 </select>
               </F>
             </div>
           </>
         ) : (
           <>
-            <F label="Assunto">
+            <F label={t('Assunto')}>
               <input className="inp" autoFocus value={item.subject} onChange={(e) => up({ subject: e.target.value })} />
             </F>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
-              <F label="Início">
+              <F label={t('Início')}>
                 <input className="inp" type="date" value={item.startDate || ''} onChange={(e) => up({ startDate: e.target.value })} />
               </F>
-              <F label="Vencimento">
+              <F label={t('Vencimento')}>
                 <input className="inp" type="date" value={item.dueDate || ''} onChange={(e) => up({ dueDate: e.target.value })} />
               </F>
-              <F label="% concluída">
+              <F label={t('% concluída')}>
                 <input
                   className="inp"
                   type="number"
@@ -227,12 +229,12 @@ export function NewItemDialog({
                 checked={!!item.isComplete}
                 onChange={(e) => up({ isComplete: e.target.checked, percentComplete: e.target.checked ? 100 : item.percentComplete })}
               />
-              Tarefa concluída
+              {t('Tarefa concluída')}
             </label>
           </>
         )}
 
-        <F label={kind === 'contact' ? 'Anotações' : 'Descrição'}>
+        <F label={kind === 'contact' ? t('Anotações') : t('Descrição')}>
           <textarea
             className="inp"
             rows={4}
@@ -244,10 +246,10 @@ export function NewItemDialog({
         {err && <div style={{ fontSize: 12, color: '#a4262c' }}>{err}</div>}
         <div style={{ display: 'flex', gap: 8 }}>
           <button className="btn btn-primary" disabled={busy} onClick={() => void save()}>
-            {busy ? 'Salvando…' : 'Salvar'}
+            {busy ? t('Salvando…') : t('Salvar')}
           </button>
           <button className="btn" disabled={busy} onClick={onClose}>
-            Cancelar
+            {t('Cancelar')}
           </button>
         </div>
       </div>

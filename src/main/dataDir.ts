@@ -77,9 +77,22 @@ export function dataDir(): string {
 
 /** Pasta onde as bases locais ficam — <raiz>/Mail, como o Mail/ do Thunderbird. */
 export function mailRoot(): string {
-  const r = join(dataDir(), 'Mail');
+  const r = mailRootPath();
   mkdirSync(r, { recursive: true });
   return r;
+}
+
+/** Caminho de <raiz>/Mail SEM criar a pasta — para consultas que não podem
+ *  materializar o perfil (ex.: app:info no primeiro boot, antes do wizard). */
+export function mailRootPath(): string {
+  return join(dataDir(), 'Mail');
+}
+
+/** O perfil já existe? (ponteiro gravado ou pasta de dados presente).
+ *  No primeiro boot — antes do wizard escolher a pasta — é false e nada
+ *  deve criar a raiz de dados "por acidente" (logs, app:info, caches). */
+export function profileEstablished(): boolean {
+  return existsSync(pointerPath()) || existsSync(dataDir());
 }
 
 /** Esta pasta já é um perfil Unit Mail? (tem marcador ou dados nossos) */

@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Icon } from '../icons';
+import { t, useLang } from '../i18n';
 import type { SyncProgress } from '../../../shared/types';
 
 interface Props {
@@ -13,6 +14,7 @@ interface Props {
 /** Diálogo "Progresso de envio/recebimento" — estilo Outlook 2016: uma
  * linha por tarefa (conta), sem listar mensagem a mensagem. */
 export function SyncProgressDialog({ tasks, onClose, onCancelAll, onCancelTask }: Props) {
+  useLang();
   const [details, setDetails] = useState(true);
   const done = tasks.filter((t) => t.status !== 'processing' && t.status !== 'pending').length;
   const running = tasks.some((t) => t.status === 'processing' || t.status === 'pending');
@@ -37,19 +39,19 @@ export function SyncProgressDialog({ tasks, onClose, onCancelAll, onCancelTask }
     return () => clearTimeout(t);
   }, [running, errors.length, onClose]);
 
-  const statusLabel = (t: SyncProgress) =>
-    t.status === 'done'
-      ? 'Concluído'
-      : t.status === 'cancelled'
-        ? 'Cancelado'
-        : t.status === 'error'
-          ? 'Erro'
-          : t.status === 'pending'
-            ? 'Aguardando'
-            : 'Processando';
-  const remaining = (t: SyncProgress) =>
-    t.status === 'processing' && t.total !== undefined
-      ? `${Math.max(0, t.total - (t.done ?? 0))} item(ns)`
+  const statusLabel = (tk: SyncProgress) =>
+    tk.status === 'done'
+      ? t('Concluído')
+      : tk.status === 'cancelled'
+        ? t('Cancelado')
+        : tk.status === 'error'
+          ? t('Erro')
+          : tk.status === 'pending'
+            ? t('Aguardando')
+            : t('Processando');
+  const remaining = (tk: SyncProgress) =>
+    tk.status === 'processing' && tk.total !== undefined
+      ? t('{n} item(ns)', { n: Math.max(0, tk.total - (tk.done ?? 0)) })
       : '';
 
   return (
@@ -57,15 +59,15 @@ export function SyncProgressDialog({ tasks, onClose, onCancelAll, onCancelTask }
       <div className="sync-dialog" onClick={(e) => e.stopPropagation()}>
         <div className="sync-dlg-title">
           <Icon name="sendReceive" size={16} />
-          <span>Progresso de envio/recebimento no Unit Mail</span>
-          <button className="close-x danger" onClick={onClose} title="Fechar">
+          <span>{t('Progresso de envio/recebimento no Unit Mail')}</span>
+          <button className="close-x danger" onClick={onClose} title={t('Fechar')}>
             <Icon name="close" size={14} />
           </button>
         </div>
 
         <div className="sync-dlg-count">
-          {done} de {tasks.length || 0} tarefas foram concluídas
-          {errors.length > 0 ? ` (${errors.length} com erro)` : ''}
+          {t('{done} de {total} tarefas foram concluídas', { done, total: tasks.length || 0 })}
+          {errors.length > 0 ? ` (${t('{n} com erro', { n: errors.length })})` : ''}
         </div>
         <div className="sync-dlg-bar">
           <div
@@ -81,42 +83,42 @@ export function SyncProgressDialog({ tasks, onClose, onCancelAll, onCancelTask }
                 className={tab === 'tasks' ? 'active' : ''}
                 onClick={() => setTab('tasks')}
               >
-                Tarefas
+                {t('Tarefas')}
               </button>
               <button
                 className={tab === 'errors' ? 'active' : ''}
                 onClick={() => setTab('errors')}
               >
-                Erros{errors.length ? ` (${errors.length})` : ''}
+                {t('Erros')}{errors.length ? ` (${errors.length})` : ''}
               </button>
             </div>
 
             {tab === 'tasks' && (
               <div className="sync-dlg-list">
                 <div className="sync-dlg-head">
-                  <span>Nome</span>
-                  <span>Progresso</span>
-                  <span>Restante</span>
+                  <span>{t('Nome')}</span>
+                  <span>{t('Progresso')}</span>
+                  <span>{t('Restante')}</span>
                 </div>
                 {tasks.length === 0 && (
-                  <div className="sync-dlg-empty">Nenhuma tarefa em execução.</div>
+                  <div className="sync-dlg-empty">{t('Nenhuma tarefa em execução.')}</div>
                 )}
-                {tasks.map((t) => (
+                {tasks.map((tk) => (
                   <button
-                    key={t.taskId}
-                    className={`sync-dlg-row ${sel === t.taskId ? 'sel' : ''}`}
-                    onClick={() => setSel(t.taskId)}
-                    title={t.error || ''}
+                    key={tk.taskId}
+                    className={`sync-dlg-row ${sel === tk.taskId ? 'sel' : ''}`}
+                    onClick={() => setSel(tk.taskId)}
+                    title={tk.error || ''}
                   >
                     <span>
                       <Icon
-                        name={t.status === 'done' ? 'check' : t.status === 'error' ? 'close' : 'sendReceive'}
+                        name={tk.status === 'done' ? 'check' : tk.status === 'error' ? 'close' : 'sendReceive'}
                         size={13}
                       />{' '}
-                      {t.label}
+                      {tk.label}
                     </span>
-                    <span className={t.status === 'error' ? 'err' : ''}>{statusLabel(t)}</span>
-                    <span>{remaining(t)}</span>
+                    <span className={tk.status === 'error' ? 'err' : ''}>{statusLabel(tk)}</span>
+                    <span>{remaining(tk)}</span>
                   </button>
                 ))}
               </div>
@@ -124,12 +126,12 @@ export function SyncProgressDialog({ tasks, onClose, onCancelAll, onCancelTask }
             {tab === 'errors' && (
               <div className="sync-dlg-list">
                 {errors.length === 0 && (
-                  <div className="sync-dlg-empty">Nenhum erro nesta execução.</div>
+                  <div className="sync-dlg-empty">{t('Nenhum erro nesta execução.')}</div>
                 )}
-                {errors.map((t) => (
-                  <div key={t.taskId} className="sync-dlg-error">
-                    <b>{t.label}</b>
-                    <div>{t.error}</div>
+                {errors.map((tk) => (
+                  <div key={tk.taskId} className="sync-dlg-error">
+                    <b>{tk.label}</b>
+                    <div>{tk.error}</div>
                   </div>
                 ))}
               </div>
@@ -143,21 +145,21 @@ export function SyncProgressDialog({ tasks, onClose, onCancelAll, onCancelTask }
             disabled={!canCancelSel}
             title={
               canCancelSel
-                ? `Cancelar "${selTask?.label}"`
-                : 'Selecione uma tarefa em execução na lista'
+                ? t('Cancelar "{label}"', { label: selTask?.label || '' })
+                : t('Selecione uma tarefa em execução na lista')
             }
             onClick={() => sel && onCancelTask(sel)}
           >
-            Cancelar tarefa
+            {t('Cancelar tarefa')}
           </button>
           <button className="ghost-btn" disabled={!running} onClick={onCancelAll}>
-            Cancelar tudo
+            {t('Cancelar tudo')}
           </button>
           <button className="ghost-btn" onClick={() => setDetails((d) => !d)}>
-            {details ? '>> Resumir' : '<< Detalhes'}
+            {details ? `>> ${t('Resumir')}` : `<< ${t('Detalhes')}`}
           </button>
           <button className="primary-btn" onClick={onClose}>
-            {running ? 'Ocultar' : 'Fechar'}
+            {running ? t('Ocultar') : t('Fechar')}
           </button>
         </div>
       </div>

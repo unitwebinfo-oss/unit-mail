@@ -1,11 +1,13 @@
 import { PSTFile, PSTFolder, PSTMessage, PSTAttachment } from 'pst-extractor';
 import { simpleParser } from 'mailparser';
 import { basename, join } from 'path';
-import { randomUUID } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } from 'fs';
 import { isDefaultFolderId } from '../shared/types';
 import { normSearch } from '../shared/textNorm';
 import { safeFsName } from '../shared/fsName';
+import { resolveFolderName, folderKindOf, type FolderKind } from '../shared/folderNames';
+import { appLanguage } from './language';
 import type {
   AttachmentData,
   AttachmentMeta,
@@ -340,7 +342,10 @@ export class PstService {
         name: folder.displayName || '(sem nome)',
         containerClass: folder.containerClass || '',
         contentCount: folder.contentCount || 0,
-        unreadCount: Math.max(0, (folder.unreadCount || 0) - this.pstReadOverrideCount(id)),
+        unreadCount: (() => {
+          const ro = this.pstReadOverrideCounts(id);
+          return Math.max(0, (folder.unreadCount || 0) - ro.read) + ro.unread;
+        })(),
         hidden: this.isFolderHidden(id) || undefined,
         children,
       };
@@ -406,9 +411,10 @@ export class PstService {
       }
       // Desconta os itens do PST ocultos (exclusão lógica)
       match.contentCount = Math.max(0, (mm._bc ?? 0) - this.hiddenSet(match.id).size) + own.length;
-      const readOv = this.pstReadOverrideCount(match.id);
+      const ro = this.pstReadOverrideCounts(match.id);
       match.unreadCount =
-        Math.max(0, (mm._bu ?? 0) - this.hiddenSet(match.id).size - readOv) +
+        Math.max(0, (mm._bu ?? 0) - this.hiddenSet(match.id).size - ro.read) +
+        ro.unread +
         own.filter((f) => st.get(`${dirName}/${f}`) !== true).length;
       // Filhos do PST (nunca "arc:") + filhos da sombra mesclados por nome
       match.children = match.children.filter((c) => !c.id.startsWith('arc:'));
@@ -471,10 +477,9 @@ export class PstService {
           if (f) {
             const hidden = this.hiddenSet(n.id).size;
             n.contentCount = Math.max(0, (f.contentCount || 0) - hidden);
-            n.unreadCount = Math.max(
-              0,
-              (f.unreadCount || 0) - hidden - this.pstReadOverrideCount(n.id),
-            );
+            const ro = this.pstReadOverrideCounts(n.id);
+            n.unreadCount =
+              Math.max(0, (f.unreadCount || 0) - hidden - ro.read) + ro.unread;
           }
         }
         fixPstCounts(n.children);
@@ -893,12 +898,14 @@ export class PstService {
       }
       // Mensagens que o próprio usuário enviou nunca são "não lidas" — saneia
       // cópias gravadas antes desta regra (ficavam sem entrada = não lidas).
-      for (const sent of ['Itens Enviados', 'Caixa de Saída', 'Sent Items', 'Outbox']) {
-        const d = join(dir, sent);
-        if (!existsSync(d)) continue;
-        for (const f of readdirSync(d)) {
-          if (f.endsWith('.eml') && !this.readState.has(`${sent}/${f}`)) {
-            this.readState.set(`${sent}/${f}`, true);
+      // Reconhece a pasta Enviados/Saída em qualquer idioma suportado.
+      for (const d of readdirSync(dir, { withFileTypes: true })) {
+        if (!d.isDirectory()) continue;
+        const kind = folderKindOf(d.name);
+        if (kind !== 'sent' && kind !== 'outbox') continue;
+        for (const f of readdirSync(join(dir, d.name))) {
+          if (f.endsWith('.eml') && !this.readState.has(`${d.name}/${f}`)) {
+            this.readState.set(`${d.name}/${f}`, true);
           }
         }
       }
@@ -953,22 +960,36 @@ export class PstService {
   }
 
   /**
-   * Quantos itens do PST desta pasta foram marcados como lidos via override.
+   * Overrides de leitura do PST desta pasta: `read` = marcados lidos sobre
+   * flag não-lido do PST (subtrai do badge), `unread` = marcados não-lidos
+   * sobre flag lido (soma no badge). Itens ocultos ("excluídos") não contam.
    * O mapa por pasta é pré-computado por versão do readState — antes cada
    * chamada varria o readstate inteiro (O(pastas × overrides) por refresh).
    */
-  private roCounts: { ver: number; counts: Map<string, number> } | null = null;
-  private pstReadOverrideCount(folderId: string): number {
+  private roCounts: {
+    ver: number;
+    read: Map<string, number>;
+    unread: Map<string, number>;
+  } | null = null;
+  private pstReadOverrideCounts(folderId: string): { read: number; unread: number } {
     if (!this.roCounts || this.roCounts.ver !== this.readStateVer) {
-      const counts = new Map<string, number>();
+      const read = new Map<string, number>();
+      const unread = new Map<string, number>();
       for (const [k, v] of this.loadReadState()) {
-        if (v !== true || !k.startsWith('pst|')) continue;
-        const fid = k.slice(4, k.lastIndexOf('|'));
-        counts.set(fid, (counts.get(fid) ?? 0) + 1);
+        if (!k.startsWith('pst|')) continue;
+        const lastBar = k.lastIndexOf('|');
+        const fid = k.slice(4, lastBar);
+        const raw = parseInt(k.slice(lastBar + 1), 10);
+        if (this.hiddenSet(fid).has(raw)) continue;
+        const m = v === true ? read : unread;
+        m.set(fid, (m.get(fid) ?? 0) + 1);
       }
-      this.roCounts = { ver: this.readStateVer, counts };
+      this.roCounts = { ver: this.readStateVer, read, unread };
     }
-    return this.roCounts.counts.get(folderId) ?? 0;
+    return {
+      read: this.roCounts.read.get(folderId) ?? 0,
+      unread: this.roCounts.unread.get(folderId) ?? 0,
+    };
   }
 
   /** Marca um item como lido (usado ao abrir o detalhe). */
@@ -1053,7 +1074,10 @@ export class PstService {
         for (let i = 0; i < total; i++) {
           const msg = folder.getNextChild();
           if (!msg) break;
-          if (!hidden.has(i) && !msg.isRead) st.set(this.pstReadKey(folderId, i), true);
+          // Estado EFETIVO — um override "não lido" anterior também precisa
+          // ser virado para lido (msg.isRead do PST seria true e pulava).
+          const eff = this.pstReadOverride(folderId, i) ?? !!msg.isRead;
+          if (!hidden.has(i) && !eff) st.set(this.pstReadKey(folderId, i), true);
         }
       }
     }
@@ -1133,6 +1157,7 @@ export class PstService {
       importance: 0,
       size,
       preview: (parsed.text || '').slice(0, 200),
+      accountEmail: hdr('x-um-account') || undefined,
     };
     // Mensagem com parte iCalendar (convite salvo/compromisso aceito) —
     // extrai data/local para a pasta de Calendário e para lembretes.
@@ -1474,8 +1499,23 @@ export class PstService {
     }
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const MailComposer = require('nodemailer/lib/mail-composer');
+    // Message-ID estável: o real (dos cabeçalhos de transporte do PST) quando
+    // existe; senão um id determinístico dos campos do item. Sem isso o
+    // MailComposer gerava um id aleatório a cada export — o mesmo item do PST
+    // virava um .eml "diferente" e a deduplicação nunca casava.
+    const midReal = /^message-id:[ \t]*(<?[^>\r\n]+>?)/im.exec(d.transportMessageHeaders || '');
+    const messageId = midReal
+      ? midReal[1].startsWith('<')
+        ? midReal[1]
+        : `<${midReal[1].trim()}>`
+      : `<pst-${createHash('sha1')
+          .update(
+            `${d.senderEmailAddress}|${d.displayTo}|${d.displayCC}|${d.subject}|${d.deliveryTime || d.sentTime}`,
+          )
+          .digest('hex')}@unit-mail.pst>`;
     return new Promise<Buffer>((resolve, reject) => {
       new MailComposer({
+        messageId,
         from: d.senderEmailAddress
           ? `"${(d.senderName || '').replace(/"/g, '')}" <${d.senderEmailAddress}>`
           : d.senderName,
@@ -1541,8 +1581,21 @@ export class PstService {
    */
   async createSpecialItem(item: NewSpecialItem): Promise<string> {
     this.requireOpen();
-    const folderName =
-      item.kind === 'appt' ? 'Calendário' : item.kind === 'contact' ? 'Contatos' : 'Tarefas';
+    const kind: FolderKind =
+      item.kind === 'appt' ? 'calendar' : item.kind === 'contact' ? 'contacts' : 'tasks';
+    // Pasta já existente de qualquer idioma, senão o nome do idioma atual —
+    // nunca cria "Calendar" ao lado de "Calendário" nem renomeia o que existe.
+    let existing: string[] = [];
+    try {
+      if (this.archiveDir && existsSync(this.archiveDir)) {
+        existing = readdirSync(this.archiveDir, { withFileTypes: true })
+          .filter((d) => d.isDirectory())
+          .map((d) => d.name);
+      }
+    } catch {
+      // usa o nome localizado
+    }
+    const folderName = resolveFolderName(existing, kind, appLanguage());
     const headers: Record<string, string> = {};
     const set = (k: string, v: string | number | boolean | null | undefined) => {
       if (v !== undefined && v !== null && v !== '') headers[k] = String(v);

@@ -18,6 +18,12 @@ describe('matchRule', () => {
     expect(matchRule(rule({ subjectContains: 'fatura' }), env)).toBe(true);
   });
 
+  it('ignora espaços nas pontas da condição', () => {
+    // ' maria ' deve casar como 'maria' — não procurar o texto com espaços.
+    expect(matchRule(rule({ fromContains: '  maria  ' }), env)).toBe(true);
+    expect(matchRule(rule({ subjectContains: ' recibo ' }), env)).toBe(false);
+  });
+
   it('exige todas as condições preenchidas (E lógico)', () => {
     expect(matchRule(rule({ fromContains: 'maria', subjectContains: 'fatura' }), env)).toBe(true);
     expect(matchRule(rule({ fromContains: 'maria', subjectContains: 'recibo' }), env)).toBe(false);

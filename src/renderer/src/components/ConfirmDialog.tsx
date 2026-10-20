@@ -1,5 +1,6 @@
 import React from 'react';
 import { Icon } from '../icons';
+import { t, useLang } from '../i18n';
 
 interface ConfirmDialogProps {
   title: string;
@@ -21,6 +22,7 @@ export function ConfirmDialog({
   onConfirm,
   onCancel,
 }: ConfirmDialogProps) {
+  useLang();
   React.useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onCancel();
@@ -40,10 +42,10 @@ export function ConfirmDialog({
         <div className="confirm-msg">{message}</div>
         <div className="confirm-actions">
           <button className="ghost-btn" onClick={onCancel} autoFocus>
-            Cancelar
+            {t('Cancelar')}
           </button>
           <button className={danger ? 'danger-btn' : 'btn btn-primary'} onClick={onConfirm}>
-            {confirmLabel}
+            {confirmLabel === 'Excluir' ? t('Excluir') : confirmLabel}
           </button>
         </div>
       </div>

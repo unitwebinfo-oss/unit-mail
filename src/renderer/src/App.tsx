@@ -7,7 +7,7 @@ import { ReadingPane } from './components/ReadingPane';
 import { ModuleBar } from './components/ModuleBar';
 import { AccountsSettings, type SettingsTab } from './components/AccountsSettings';
 import { OnboardingWizard } from './components/OnboardingWizard';
-import { ComposeModal, type ComposeDraft } from './components/ComposeModal';
+import type { ComposeDraft } from './components/ComposeModal';
 import { NewItemDialog } from './components/NewItemDialog';
 import { SyncProgressDialog } from './components/SyncProgressDialog';
 import { ConfirmDialog } from './components/ConfirmDialog';
@@ -16,8 +16,10 @@ import { CalendarModule } from './modules/CalendarModule';
 import { ContactsModule } from './modules/ContactsModule';
 import { TasksModule } from './modules/TasksModule';
 import { Icon } from './icons';
-import { findFirstFolder, containerClassForModule, applyTheme } from './utils';
+import { findFirstFolder, containerClassForModule, applyTheme, arcFolderId, playReminderSound } from './utils';
 import { isDefaultFolderId } from '../../shared/types';
+import { folderKindOf, folderName as stdFolderName, localizeFolderName } from '../../shared/folderNames';
+import { initLang, locale, t, useLang } from './i18n';
 import type {
   AccountConfig,
   FolderNode,
@@ -36,6 +38,11 @@ import type {
 // itens de uma pasta grande (ex.: 10 mil msgs) custava ~2s só na 1ª página.
 // 100 é visível instantaneamente e o scroll infinito busca o resto sob demanda.
 const PAGE = 100;
+
+/** Rascunhos abrem numa janela do SO separada — como no Outlook. */
+function openDraft(d: ComposeDraft): void {
+  void window.outlook.openComposeWindow(d);
+}
 
 interface Selection {
   sourceId: string;
@@ -96,6 +103,7 @@ function applyFolderOrder(
 }
 
 export default function App() {
+  const lang = useLang();
   const [sources, setSources] = useState<MailSource[]>([]);
   const [folderTrees, setFolderTrees] = useState<Record<string, FolderNode[]>>({});
   const [accounts, setAccounts] = useState<AccountConfig[]>([]);
@@ -142,10 +150,12 @@ export default function App() {
   const [winChrome, setWinChrome] = useState(false);
   /** Janela de mensagem maximizada (duplo clique num email). */
   const [msgMax, setMsgMax] = useState(false);
+  /** Release mais nova no GitHub (verificação de atualização na abertura). */
+  const [updateInfo, setUpdateInfo] = useState<{ latest: string; url: string } | null>(null);
   const [showSettings, setShowSettings] = useState(false);
   const [settingsInitTab, setSettingsInitTab] = useState<SettingsTab>('email');
   const [showOnboarding, setShowOnboarding] = useState(false);
-  const [composeDraft, setComposeDraft] = useState<ComposeDraft | null>(null);
+
   /** Diálogo "Novos Itens" — compromisso, contato ou tarefa. */
   const [newItemKind, setNewItemKind] = useState<'appt' | 'contact' | 'task' | null>(null);
   /** Base onde itens especiais são criados — sempre a principal (arquivo de dados padrão). */
@@ -353,7 +363,7 @@ export default function App() {
       }
       await fillFolder(sourceId, folder, count, seq);
     } catch (e) {
-      if (seq === loadSeq.current) setError(`Erro ao ler pasta: ${(e as Error).message}`);
+      if (seq === loadSeq.current) setError(t('Erro ao ler pasta: {msg}', { msg: (e as Error).message }));
     } finally {
       if (seq === loadSeq.current) setListLoading(false);
     }
@@ -443,7 +453,7 @@ export default function App() {
   );
 
   const bootstrap = useCallback(async () => {
-    setLoading('Carregando bases…');
+    setLoading(t('Carregando bases…'));
     try {
       const { list, trees } = await refreshSources();
       refreshAccounts();
@@ -461,8 +471,25 @@ export default function App() {
     // Barra azul integrada onde o titleBarOverlay existe (Windows e Linux);
     // no macOS a moldura nativa continua.
     window.outlook.getAppInfo?.().then((i) => setWinChrome(i.platform !== 'darwin'));
+    // Verificação de atualização — uma vez na abertura, alguns segundos depois
+    // do boot para não concorrer com a carga inicial das bases.
+    const updTimer = setTimeout(() => {
+      window.outlook
+        .checkUpdate?.()
+        .then((r) => {
+          if (r?.newer) setUpdateInfo({ latest: r.latest, url: r.url });
+        })
+        .catch(() => {});
+    }, 5000);
+    // Idioma salvo — decide t() e os nomes de exibição das pastas padrão
+    window.outlook.getLanguage?.().then((l) => initLang(l));
     // Tema: aplica o salvo e reage quando o SO alterna claro/escuro
     window.outlook.getTheme?.().then((t) => applyTheme(t));
+    // Primeiro paint real → o main só mostra a janela depois disso
+    // (double-RAF = depois do frame ser composto).
+    requestAnimationFrame(() =>
+      requestAnimationFrame(() => window.outlook.appReady?.()),
+    );
     const mq = window.matchMedia('(prefers-color-scheme: dark)');
     const onMq = () => {
       window.outlook.getTheme?.().then((t) => {
@@ -479,7 +506,7 @@ export default function App() {
       // Sem toast de "mensagens recebidas"/"nenhuma encontrada" — só erro avisa;
       // o progresso aparece no indicador Enviar/Receber e nas badges das pastas.
       const errs = results.filter((r) => r.error).map((r) => r.error).join('; ');
-      if (errs) setError(`Erro no envio/recebimento: ${errs}`);
+      if (errs) setError(t('Erro no envio/recebimento: {errs}', { errs }));
       refreshSources();
       // Emails novos entregues → revalida a pasta aberta sem precisar
       // sair e voltar nela (o count-check ignora quando nada mudou nela)
@@ -512,11 +539,11 @@ export default function App() {
       // refresh silencioso atualiza qualquer uma delas que estiver aberta
       refreshOpenFolder();
       if (r.ok) {
-        setNotice(`"${r.subject || 'Mensagem'}" enviada para Itens Enviados.`);
+        setNotice(t('"{subj}" enviada para {folder}.', { subj: r.subject || t('Mensagem'), folder: stdFolderName('sent', lang) }));
         setTimeout(() => setNotice(''), 6000);
       } else {
         setError(
-          `Falha ao enviar "${r.subject || 'mensagem'}": ${r.error} — a mensagem ficou na Caixa de Saída.`,
+          t('Falha ao enviar "{subj}": {err} — a mensagem ficou em {folder}.', { subj: r.subject || t('mensagem'), err: r.error || '', folder: stdFolderName('outbox', lang) }),
         );
       }
     });
@@ -526,7 +553,7 @@ export default function App() {
         const m = /^mailto:([^?]*)\??(.*)$/i.exec(url);
         if (!m) return;
         const q = new URLSearchParams(m[2] || '');
-        setComposeDraft({
+        openDraft({
           accountId: defaultAccountId(),
           kind: 'new',
           to: decodeURIComponent(m[1] || ''),
@@ -545,17 +572,22 @@ export default function App() {
     );
     // Lembrete de compromisso disparado pelo main → toast dentro do app
     const unsubCal = window.outlook.onCalendarReminder?.((ev) => {
-      const quando = ev.startTime ? new Date(ev.startTime).toLocaleString('pt-BR') : '';
-      setNotice(`Lembrete: ${ev.subject}${quando ? ` — ${quando}` : ''}${ev.location ? ` (${ev.location})` : ''}`);
+      playReminderSound();
+      const quando = ev.startTime ? new Date(ev.startTime).toLocaleString(locale()) : '';
+      setNotice(t('Lembrete: {subj}{quando}{local}', { subj: ev.subject, quando: quando ? ` — ${quando}` : '', local: ev.location ? ` (${ev.location})` : '' }));
       setTimeout(() => setNotice(''), 20000);
     });
+    // Envio concluído numa janela de composição separada → recarrega listas
+    const unsubSent2 = window.outlook.onComposeSent?.(() => void refreshOpenFolder());
     return () => {
+      clearTimeout(updTimer);
       unsub?.();
       unsubProg?.();
       unsubCal?.();
       unsubSend?.();
       unsubMailto?.();
       unsubSearchBatch?.();
+      unsubSent2?.();
       mq.removeEventListener('change', onMq);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -624,7 +656,7 @@ export default function App() {
           }
           setDetail(d);
         } catch (e) {
-          setError(`Erro ao ler item: ${(e as Error).message}`);
+          setError(t('Erro ao ler item: {msg}', { msg: (e as Error).message }));
         } finally {
           setDetailLoading(false);
         }
@@ -759,7 +791,7 @@ export default function App() {
       try {
         await window.outlook.saveAttachment(detailRef.sourceId, detailRef.folderId, detail.index, attachIndex);
       } catch (e) {
-        setError(`Erro ao salvar anexo: ${(e as Error).message}`);
+        setError(t('Erro ao salvar anexo: {msg}', { msg: (e as Error).message }));
       }
     },
     [detail, detailRef],
@@ -777,7 +809,7 @@ export default function App() {
           attachIndex,
         );
       } catch (e) {
-        setError(`Erro ao abrir anexo: ${(e as Error).message}`);
+        setError(t('Erro ao abrir anexo: {msg}', { msg: (e as Error).message }));
       }
     },
     [detail, detailRef],
@@ -793,10 +825,10 @@ export default function App() {
         detail.index,
       );
       if (res && res.saved < res.total) {
-        setError(`${res.saved} de ${res.total} anexos salvos em "${res.dir}"`);
+        setError(t('{n} de {total} anexos salvos em "{dir}"', { n: res.saved, total: res.total, dir: res.dir }));
       }
     } catch (e) {
-      setError(`Erro ao salvar anexos: ${(e as Error).message}`);
+      setError(t('Erro ao salvar anexos: {msg}', { msg: (e as Error).message }));
     }
   }, [detail, detailRef]);
 
@@ -812,7 +844,7 @@ export default function App() {
           attachIndex,
         );
       } catch (e) {
-        setError(`Erro ao salvar anexo: ${(e as Error).message}`);
+        setError(t('Erro ao salvar anexo: {msg}', { msg: (e as Error).message }));
       }
     },
     [openMsg],
@@ -830,7 +862,7 @@ export default function App() {
           attachIndex,
         );
       } catch (e) {
-        setError(`Erro ao abrir anexo: ${(e as Error).message}`);
+        setError(t('Erro ao abrir anexo: {msg}', { msg: (e as Error).message }));
       }
     },
     [openMsg],
@@ -846,10 +878,10 @@ export default function App() {
         openMsg.detail.index,
       );
       if (res && res.saved < res.total) {
-        setError(`${res.saved} de ${res.total} anexos salvos em "${res.dir}"`);
+        setError(t('{n} de {total} anexos salvos em "{dir}"', { n: res.saved, total: res.total, dir: res.dir }));
       }
     } catch (e) {
-      setError(`Erro ao salvar anexos: ${(e as Error).message}`);
+      setError(t('Erro ao salvar anexos: {msg}', { msg: (e as Error).message }));
     }
   }, [openMsg]);
 
@@ -872,7 +904,7 @@ export default function App() {
         detailCache.current.set(key, d);
         setOpenMsg({ detail: d, sourceId: sid, folderId: fid });
       } catch (e) {
-        setError(`Erro ao abrir mensagem: ${(e as Error).message}`);
+        setError(t('Erro ao abrir mensagem: {msg}', { msg: (e as Error).message }));
       }
     },
     [selected, selectItem],
@@ -897,11 +929,11 @@ export default function App() {
       const errs = results.filter((r) => r.error).map((r) => r.error).join('; ');
       // Sem aviso de "nenhuma mensagem encontrada" — o indicador de tarefas já
       // mostra o progresso; aqui só aparece quando algo deu errado.
-      if (errs) setError(`Sync parcial: ${errs}`);
+      if (errs) setError(t('Sincronização parcial: {errs}', { errs }));
       // recarrega árvores: novas pastas locais de arquivamento podem ter surgido
       await refreshSources();
     } catch (e) {
-      setError(`Erro no envio/recebimento: ${(e as Error).message}`);
+      setError(t('Erro no envio/recebimento: {msg}', { msg: (e as Error).message }));
     }
   }, [refreshSources]);
 
@@ -929,7 +961,7 @@ export default function App() {
         }
         if (copied > 0) {
           setError(
-            `${copied} item(ns) copiado(s) — o arquivo PST é somente leitura, o original foi preservado.`,
+            t('{n} item(ns) copiado(s) — o arquivo PST é somente leitura, o original foi preservado.', { n: copied }),
           );
         } else {
           setError('');
@@ -945,7 +977,7 @@ export default function App() {
         await refreshSources();
         if (selected) await loadFolder(selected.sourceId, selected.folder);
       } catch (e) {
-        setError(`Erro ao mover: ${(e as Error).message}`);
+        setError(t('Erro ao mover: {msg}', { msg: (e as Error).message }));
       } finally {
         setLoading('');
       }
@@ -978,10 +1010,16 @@ export default function App() {
       if (!detail || !detailRef) return;
       const indexes = targetIndexes();
       if (indexes.length === 0) return;
+      // Pasta padrão (lixo, arquivo…) → id da pasta EXISTENTE na base, em
+      // qualquer idioma; só cai no nome localizado quando ainda não existe.
+      const kind = folderKindOf(folderName);
+      const tree = folderTrees[detailRef.sourceId] || [];
+      const dstId = kind ? arcFolderId(tree, kind, lang) : `arc:${folderName}`;
+      const dstLabel = kind ? stdFolderName(kind, lang) : folderName;
       setLoading(
         indexes.length > 1
-          ? `Movendo ${indexes.length} itens para "${folderName}"…`
-          : `Movendo para "${folderName}"…`,
+          ? t('Movendo {n} itens para "{pasta}"…', { n: indexes.length, pasta: dstLabel })
+          : t('Movendo para "{pasta}"…', { pasta: dstLabel }),
       );
       try {
         let copied = 0;
@@ -991,13 +1029,13 @@ export default function App() {
             detailRef.folderId,
             ix,
             detailRef.sourceId,
-            `arc:${folderName}`,
+            dstId,
           );
           if (res === 'copiado') copied++;
         }
         if (copied > 0) {
           setError(
-            `${copied} item(ns) copiado(s) — o arquivo PST é somente leitura, o original foi preservado.`,
+            t('{n} item(ns) copiado(s) — o arquivo PST é somente leitura, o original foi preservado.', { n: copied }),
           );
         } else {
           setError('');
@@ -1006,12 +1044,12 @@ export default function App() {
         await refreshSources();
         if (selected) await loadFolder(selected.sourceId, selected.folder);
       } catch (e) {
-        setError(`Erro ao mover: ${(e as Error).message}`);
+        setError(t('Erro ao mover: {msg}', { msg: (e as Error).message }));
       } finally {
         setLoading('');
       }
     },
-    [detail, detailRef, selected, selIndexes, loadFolder, refreshSources, targetIndexes],
+    [detail, detailRef, selected, selIndexes, loadFolder, refreshSources, targetIndexes, folderTrees, lang],
   );
 
   /**
@@ -1021,6 +1059,9 @@ export default function App() {
    */
   /** A pasta aberta já é a lixeira? (id arc: ou nome da pasta do PST) */
   const isTrashFolder = (folderId: string, node?: FolderNode | null) =>
+    (folderId.startsWith('arc:') && folderKindOf(folderId.slice(4).split('/').pop() || '') === 'deleted') ||
+    folderKindOf(node?.name || '') === 'deleted' ||
+    folderKindOf(node?.archiveName || '') === 'deleted' ||
     /itens exclu|deleted items|itens elimin|lixeira/i.test(
       `${folderId} ${node?.name ?? ''} ${node?.archiveName ?? ''}`,
     );
@@ -1083,12 +1124,12 @@ export default function App() {
           detailRef.folderId,
           indexes,
           detailRef.sourceId,
-          'arc:Itens Excluídos',
+          arcFolderId(folderTrees[detailRef.sourceId] || [], 'deleted', lang),
         );
       }
       setError('');
     } catch (e) {
-      setError(`Erro ao excluir: ${(e as Error).message}`);
+      setError(t('Erro ao excluir: {msg}', { msg: (e as Error).message }));
     } finally {
       void refreshSources();
       if (selected && inOpenFolder) {
@@ -1128,7 +1169,7 @@ export default function App() {
           .catch(() => {});
       }
     }
-  }, [detail, detailRef, selected, items, loadFolder, refreshSources, targetIndexes, selectItem]);
+  }, [detail, detailRef, selected, items, loadFolder, refreshSources, targetIndexes, selectItem, folderTrees, lang]);
 
   /**
    * Exclui a(s) mensagem(ns) selecionada(s). Fora da lixeira move direto para
@@ -1161,7 +1202,7 @@ export default function App() {
   }, [detail, detailRef, selected, targetIndexes, doDeleteItem, folderTrees]);
   const moveFolder = useCallback(
     async (sourceId: string, folderId: string, newParentId: string | null) => {
-      setLoading('Movendo pasta…');
+      setLoading(t('Movendo pasta…'));
       try {
         const tree = await window.outlook.moveFolder(sourceId, folderId, newParentId);
         setFolderTrees((t) => ({ ...t, [sourceId]: tree }));
@@ -1176,7 +1217,7 @@ export default function App() {
           setDetail(null);
         }
       } catch (e) {
-        setError(`Erro ao mover pasta: ${(e as Error).message}`);
+        setError(t('Erro ao mover pasta: {msg}', { msg: (e as Error).message }));
       } finally {
         setLoading('');
       }
@@ -1308,7 +1349,7 @@ export default function App() {
       try {
         applyTree(sourceId, await window.outlook.createFolder(sourceId, name, parentId));
       } catch (e) {
-        setError(`Erro ao criar pasta: ${(e as Error).message}`);
+        setError(t('Erro ao criar pasta: {msg}', { msg: (e as Error).message }));
       }
     },
     [applyTree],
@@ -1321,16 +1362,15 @@ export default function App() {
       applyTree(sourceId, tree);
       setNewItemKind(null);
       // Abre a pasta do item criado (Calendário/Contatos/Tarefas) e o módulo certo
-      const folderName =
-        item.kind === 'appt' ? 'Calendário' : item.kind === 'contact' ? 'Contatos' : 'Tarefas';
+      const kind =
+        item.kind === 'appt' ? 'calendar' : item.kind === 'contact' ? 'contacts' : 'tasks';
       const mod: ModuleId =
         item.kind === 'appt' ? 'calendar' : item.kind === 'contact' ? 'people' : 'tasks';
       const cc = containerClassForModule(mod);
       setModule(mod);
       const find = (ns: FolderNode[]): FolderNode | null => {
         for (const n of ns) {
-          if (n.name.toLowerCase() === folderName.toLowerCase() || n.containerClass === cc)
-            return n;
+          if (folderKindOf(n.name) === kind || n.containerClass === cc) return n;
           const f = find(n.children);
           if (f) return f;
         }
@@ -1348,7 +1388,7 @@ export default function App() {
       try {
         applyTree(sourceId, await window.outlook.renameFolder(sourceId, folderId, name), folderId);
       } catch (e) {
-        setError(`Erro ao renomear: ${(e as Error).message}`);
+        setError(t('Erro ao renomear: {msg}', { msg: (e as Error).message }));
       }
     },
     [applyTree],
@@ -1360,7 +1400,7 @@ export default function App() {
       try {
         applyTree(sourceId, await window.outlook.deleteFolder(sourceId, folderId), folderId);
       } catch (e) {
-        setError(`Erro ao excluir pasta: ${(e as Error).message}`);
+        setError(t('Erro ao excluir pasta: {msg}', { msg: (e as Error).message }));
       }
     },
     [applyTree],
@@ -1371,7 +1411,7 @@ export default function App() {
       // Pastas padrão são necessárias ao app (ex.: exclusão usa "Itens
       // Excluídos") — bloqueia aqui e não só no menu de contexto.
       if (isDefaultFolderId(folderId)) {
-        setError(`"${folderId.slice(4)}" é uma pasta padrão e não pode ser excluída.`);
+        setError(t('"{folder}" é uma pasta padrão e não pode ser excluída.', { folder: folderId.slice(4) }));
         return;
       }
       const node = findNode(folderTrees[sourceId] || [], folderId);
@@ -1410,7 +1450,7 @@ export default function App() {
       try {
         applyTree(sourceId, await window.outlook.setFolderHidden(sourceId, folderId, hidden));
       } catch (e) {
-        setError(`Erro ao ocultar pasta: ${(e as Error).message}`);
+        setError(t('Erro ao ocultar pasta: {msg}', { msg: (e as Error).message }));
       }
     },
     [applyTree],
@@ -1421,7 +1461,7 @@ export default function App() {
       try {
         applyTree(sourceId, await window.outlook.copyFolder(sourceId, folderId));
       } catch (e) {
-        setError(`Erro ao copiar pasta: ${(e as Error).message}`);
+        setError(t('Erro ao copiar pasta: {msg}', { msg: (e as Error).message }));
       }
     },
     [applyTree],
@@ -1439,12 +1479,12 @@ export default function App() {
         }
         setNotice(
           removed > 0
-            ? `${removed} item(ns) removido(s) da pasta.`
-            : 'A pasta já está vazia.',
+            ? t('{n} item(ns) removido(s) da pasta.', { n: removed })
+            : t('A pasta já está vazia.'),
         );
         setTimeout(() => setNotice(''), 7000);
       } catch (e) {
-        setError(`Erro ao limpar pasta: ${(e as Error).message}`);
+        setError(t('Erro ao limpar pasta: {msg}', { msg: (e as Error).message }));
       }
     },
     [applyTree, selected, loadFolder],
@@ -1470,15 +1510,22 @@ export default function App() {
     async (sourceId: string, folderId: string) => {
       try {
         await window.outlook.markAllRead(sourceId, folderId);
-        applyTree(sourceId, await window.outlook.getFolderTree(sourceId));
+        // O count-check do loadFolder ignora mudanças de isRead (a contagem
+        // é a mesma) — reflete "lido" nos itens em memória e no cache da
+        // pasta em vez de re-baixar a lista inteira.
+        const readAll = (list: ItemSummary[]) => list.map((it) => ({ ...it, isRead: true }));
+        const ck = `${sourceId}|${folderId}`;
+        const hit = itemsCache.current.get(ck);
+        if (hit) itemsCache.current.set(ck, readAll(hit));
         if (selected?.sourceId === sourceId && selected.folder.id === folderId) {
-          await loadFolder(sourceId, selected.folder);
+          setItems((prev) => readAll(prev));
         }
-      } catch {
-        // pasta sem parte local — nada a marcar
+        applyTree(sourceId, await window.outlook.getFolderTree(sourceId));
+      } catch (e) {
+        setError(t('Erro ao marcar como lidas: {msg}', { msg: (e as Error).message }));
       }
     },
-    [applyTree, selected, loadFolder],
+    [applyTree, selected],
   );
 
   /** "Executar Regras Agora" — aplica regras habilitadas aos itens da pasta aberta. */
@@ -1487,11 +1534,11 @@ export default function App() {
     try {
       const path = await window.outlook.exportBackup();
       if (path) {
-        setNotice(`Backup salvo em: ${path}`);
+        setNotice(t('Backup salvo em: {path}', { path }));
         setTimeout(() => setNotice(''), 9000);
       }
     } catch (e) {
-      setError(`Erro ao exportar: ${(e as Error).message}`);
+      setError(t('Erro ao exportar: {msg}', { msg: (e as Error).message }));
     }
   }, []);
 
@@ -1505,12 +1552,12 @@ export default function App() {
         `${r.rules} regra(s)`,
         `${r.signatures} assinatura(s)`,
       ];
-      setNotice(`Backup importado: ${parts.join(', ')}.${r.warnings.length ? ` Atenção: ${r.warnings.join(' ')}` : ''}`);
+      setNotice(t('Backup importado: {parts}.{warn}', { parts: parts.join(', '), warn: r.warnings.length ? ` ${t('Atenção: {w}', { w: r.warnings.join(' ') })}` : '' }));
       setTimeout(() => setNotice(''), r.warnings.length ? 20000 : 9000);
       await refreshSources();
       refreshAccounts();
     } catch (e) {
-      setError(`Erro ao importar backup: ${(e as Error).message}`);
+      setError(t('Erro ao importar backup: {msg}', { msg: (e as Error).message }));
     }
   }, [refreshSources, refreshAccounts]);
 
@@ -1524,11 +1571,11 @@ export default function App() {
         detail.index,
       );
       if (path) {
-        setNotice(`Mensagem salva em: ${path}`);
+        setNotice(t('Mensagem salva em: {path}', { path }));
         setTimeout(() => setNotice(''), 9000);
       }
     } catch (e) {
-      setError(`Erro ao salvar: ${(e as Error).message}`);
+      setError(t('Erro ao salvar: {msg}', { msg: (e as Error).message }));
     }
   }, [detail, detailRef]);
 
@@ -1538,7 +1585,7 @@ export default function App() {
     try {
       await window.outlook.printItem(detailRef.sourceId, detailRef.folderId, detail.index);
     } catch (e) {
-      setError(`Erro ao imprimir: ${(e as Error).message}`);
+      setError(t('Erro ao imprimir: {msg}', { msg: (e as Error).message }));
     }
   }, [detail, detailRef]);
 
@@ -1548,7 +1595,7 @@ export default function App() {
     try {
       await window.outlook.printItem(openMsg.sourceId, openMsg.folderId, openMsg.detail.index);
     } catch (e) {
-      setError(`Erro ao imprimir: ${(e as Error).message}`);
+      setError(t('Erro ao imprimir: {msg}', { msg: (e as Error).message }));
     }
   }, [openMsg]);
 
@@ -1560,7 +1607,7 @@ export default function App() {
       const mainSrc = main ? sources.find((s) => s.filePath === main) : undefined;
       if (main && !mainSrc) {
         setError(
-          'O arquivo de dados principal não está aberto — abra-o em Configurações → Arquivos de Dados.',
+          t('O arquivo de dados principal não está aberto — abra-o em Configurações → Arquivos de Dados.'),
         );
       }
       setApptSourceId(mainSrc?.id || '');
@@ -1572,18 +1619,18 @@ export default function App() {
 
   const runRules = useCallback(async () => {
     if (!selected) return;
-    setLoading('Executando regras na pasta…');
+    setLoading(t('Executando regras na pasta…'));
     try {
       const r = await window.outlook.applyRulesToFolder(selected.sourceId, selected.folder.id);
       setError(
         r.applied > 0
-          ? `${r.applied} mensagem(ns) movida(s) pelas regras.`
-          : 'Nenhuma mensagem correspondeu às regras.',
+          ? t('{n} mensagem(ns) movida(s) pelas regras.', { n: r.applied })
+          : t('Nenhuma mensagem correspondeu às regras.'),
       );
       await refreshSources();
       await loadFolder(selected.sourceId, selected.folder);
     } catch (e) {
-      setError(`Erro ao executar regras: ${(e as Error).message}`);
+      setError(t('Erro ao executar regras: {msg}', { msg: (e as Error).message }));
     } finally {
       setLoading('');
     }
@@ -1594,25 +1641,35 @@ export default function App() {
       setSyncTasks([]);
       try {
         const r = await window.outlook.syncAccount(accountId);
-        if (r.error) setError(`Erro: ${r.error}`);
+        if (r.error) setError(t('Erro: {err}', { err: r.error }));
         await refreshSources();
       } catch (e) {
-        setError(`Erro ao sincronizar: ${(e as Error).message}`);
+        setError(t('Erro ao sincronizar: {msg}', { msg: (e as Error).message }));
       }
     },
     [refreshSources],
   );
 
   const defaultAccountId = useCallback(() => {
+    // A conta DONA da base aberta é o jeito mais confiável: no POP3 a
+    // mensagem mora numa base local que está vinculada a uma conta
+    // (deliveryPath). Responder da caixa do @agenciaunit sai pelo
+    // @agenciaunit — como o Outlook faz.
+    const src = sources.find((s) => s.id === detailRef?.sourceId);
+    if (src?.filePath) {
+      const norm = (p: string) => p.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+      const bound = accounts.find(
+        (a) => a.deliveryPath && norm(a.deliveryPath) === norm(src.filePath!),
+      );
+      if (bound) return bound.id;
+    }
     if (detailRef?.sourceId.startsWith('acct:')) {
       const id = detailRef.sourceId.slice('acct:'.length);
       if (accounts.some((a) => a.id === id)) return id;
     }
-    // Mensagem numa base local/PST (onde o POP3 entrega): a conta que envia
-    // a resposta é a da mensagem original, como no Outlook — se a mensagem
-    // foi ENVIADA por uma conta nossa (itens enviados), responde por ela;
-    // senão, a conta cujo e-mail aparece no Para/Cc (a que recebeu).
-    // Sem isso a resposta sempre saía da primeira conta da lista.
+    // Fallback para base sem conta vinculada (principal compartilhada):
+    // remetente nosso (itens enviados) → aquela conta; senão a conta cujo
+    // e-mail aparece no Para/Cc — a que recebeu a mensagem.
     if (detail) {
       const sender = (detail.senderEmailAddress || '').toLowerCase();
       const bySender = accounts.find(
@@ -1626,13 +1683,13 @@ export default function App() {
       if (match) return match.id;
     }
     return accounts[0]?.id || '';
-  }, [detailRef, detail, accounts]);
+  }, [detailRef, detail, accounts, sources]);
 
   /** Responde convite de reunião (Aceitar / Recusar / Propor novo horário). */
   const respondInvite = useCallback(
     async (response: 'accept' | 'decline' | 'counter', newStart?: string, newEnd?: string) => {
       if (!detail || !detailRef) return;
-      setLoading('Enviando resposta ao organizador…');
+      setLoading(t('Enviando resposta ao organizador…'));
       try {
         await window.outlook.respondInvite({
           sourceId: detailRef.sourceId,
@@ -1646,15 +1703,15 @@ export default function App() {
         setError('');
         setNotice(
           response === 'accept'
-            ? 'Convite aceito — compromisso adicionado ao Calendário.'
+            ? t('Convite aceito — compromisso adicionado ao Calendário.')
             : response === 'decline'
-              ? 'Convite recusado — resposta enviada ao organizador.'
-              : 'Nova proposta de horário enviada ao organizador.',
+              ? t('Convite recusado — resposta enviada ao organizador.')
+              : t('Nova proposta de horário enviada ao organizador.'),
         );
         setTimeout(() => setNotice(''), 9000);
         await refreshSources();
       } catch (e) {
-        setError(`Erro ao responder convite: ${(e as Error).message}`);
+        setError(t('Erro ao responder convite: {msg}', { msg: (e as Error).message }));
       } finally {
         setLoading('');
       }
@@ -1663,7 +1720,7 @@ export default function App() {
   );
 
   const openCompose = useCallback(() => {
-    setComposeDraft({ accountId: defaultAccountId(), kind: 'new', to: '', subject: '', bodyText: '' });
+    openDraft({ accountId: defaultAccountId(), kind: 'new', to: '', subject: '', bodyText: '' });
   }, [defaultAccountId]);
 
   const esc = (s: string) =>
@@ -1683,15 +1740,45 @@ export default function App() {
   };
 
   /** Monta draft de resposta a partir de qualquer ItemDetail (painel ou janela). */
-  const replyDraftOf = (d: ItemDetail, all: boolean): ComposeDraft => ({
-    accountId: defaultAccountId(),
-    kind: 'reply',
-    to: d.senderEmailAddress || d.senderName,
-    cc: all ? d.displayCC : '',
-    subject: d.subject.toLowerCase().startsWith('re:') ? d.subject : `Re: ${d.subject}`,
-    bodyText: '',
-    quoteHtml: quoteHtml(d),
-  });
+  const replyDraftOf = (d: ItemDetail, all: boolean): ComposeDraft => {
+    const ours = new Set(
+      accounts.map((a) => (a.email || '').toLowerCase()).filter(Boolean),
+    );
+    const sender = (d.senderEmailAddress || '').toLowerCase();
+    // Mensagem enviada por uma conta NOSSA (Itens Enviados, teste entre
+    // nossas contas): responder "para o remetente" seria responder para
+    // nós mesmos — como o Outlook, a resposta vai aos destinatários
+    // originais.
+    const selfSent = ours.has(sender);
+    const addrs = (s: string) =>
+      s.match(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g) || [];
+    const recips = addrs(`${d.displayTo || ''}; ${d.displayCC || ''}`).filter(
+      (e) => !ours.has(e.toLowerCase()),
+    );
+    // Mensagem enviada por nós: responde aos destinatários originais. Se
+    // TODOS eram nossos (teste entre nossas contas), volta ao remetente —
+    // a mensagem chegou como recebida na outra caixa, então "responder"
+    // é para quem enviou, senão o Para ficava vazio.
+    const to =
+      selfSent && recips.length
+        ? recips.join('; ')
+        : d.senderEmailAddress || d.senderName;
+    // Responder a todos: Cc = destinatários originais que não somos nós nem
+    // o remetente (ele já está no Para).
+    const cc =
+      all && !selfSent
+        ? recips.filter((e) => e.toLowerCase() !== sender).join('; ')
+        : '';
+    return {
+      accountId: defaultAccountId(),
+      kind: 'reply',
+      to,
+      cc,
+      subject: d.subject.toLowerCase().startsWith('re:') ? d.subject : `Re: ${d.subject}`,
+      bodyText: '',
+      quoteHtml: quoteHtml(d),
+    };
+  };
   const forwardDraftOf = (d: ItemDetail): ComposeDraft => ({
     accountId: defaultAccountId(),
     kind: 'forward',
@@ -1704,14 +1791,14 @@ export default function App() {
   const openReply = useCallback(
     (all: boolean) => {
       if (!detail) return;
-      setComposeDraft(replyDraftOf(detail, all));
+      openDraft(replyDraftOf(detail, all));
     },
     [detail, defaultAccountId],
   );
 
   const openForward = useCallback(() => {
     if (!detail) return;
-    setComposeDraft(forwardDraftOf(detail));
+    openDraft(forwardDraftOf(detail));
   }, [detail, defaultAccountId]);
 
   /** Pastas de uma base achatadas p/ submenu "Mover" do menu de contexto. */
@@ -1720,33 +1807,89 @@ export default function App() {
       const out: Array<{ id: string; label: string }> = [];
       const flat = (ns: FolderNode[], d: number) => {
         for (const n of ns) {
-          out.push({ id: n.id, label: `${'　'.repeat(d)}${n.name}` });
+          out.push({
+            id: n.id,
+            label: `${'　'.repeat(d)}${localizeFolderName(n.name, lang)}`,
+          });
           flat(n.children, d + 1);
         }
       };
       flat(applyFolderOrder(folderTrees[sourceId] || [], sourceId, '', folderOrders), 0);
       return out;
     },
-    [folderTrees, folderOrders],
+    [folderTrees, folderOrders, lang],
   );
 
   /** Move índices de uma pasta para outra (na mesma base) — usado pelo ctx menu. */
   const moveIndexesTo = useCallback(
     async (sourceId: string, folderId: string, indexes: number[], destFolderId: string) => {
-      setLoading(indexes.length > 1 ? `Movendo ${indexes.length} itens…` : 'Movendo…');
+      const inOpenFolder =
+        selected && selected.sourceId === sourceId && selected.folder.id === folderId;
+      // Otimista — mesmo fluxo da exclusão: os itens saem da lista na hora,
+      // sem overlay de tela inteira, e a seleção vai para a mensagem seguinte.
+      const itemFp = (m: ItemSummary) =>
+        `${m.subject}\u0000${m.senderEmailAddress}\u0000${m.deliveryTime ?? ''}\u0000${m.size ?? ''}`;
+      let nextPos = -1;
+      let nextFp: string | null = null;
+      let remaining: ItemSummary[] = [];
+      if (inOpenFolder) {
+        const gone = new Set(indexes);
+        const disp = displayedItemsRef.current.length ? displayedItemsRef.current : items;
+        nextPos = disp.findIndex((it) => gone.has(it.index));
+        const remainingDisp = disp.filter((it) => !gone.has(it.index));
+        const nxt = nextPos >= 0 ? remainingDisp[Math.min(nextPos, remainingDisp.length - 1)] : null;
+        nextFp = nxt ? itemFp(nxt) : null;
+        remaining = items.filter((it) => !gone.has(it.index));
+        setItems(remaining);
+        setItemCount((c) => Math.max(0, c - indexes.length));
+        setSelIndexes(new Set());
+        if (detail && detailRef?.sourceId === sourceId && detailRef.folderId === folderId && gone.has(detail.index)) {
+          setDetail(null);
+        }
+      }
       try {
         // Em lote: uma chamada IPC, estados em disco gravados uma vez no fim
         await window.outlook.moveItems(sourceId, folderId, indexes, sourceId, destFolderId);
         setError('');
-        await refreshSources();
-        if (selected) await loadFolder(selected.sourceId, selected.folder);
       } catch (e) {
-        setError(`Erro ao mover: ${(e as Error).message}`);
-      } finally {
-        setLoading('');
+        setError(t('Erro ao mover: {msg}', { msg: (e as Error).message }));
+        // Falhou — recarrega em silêncio para restaurar a lista real.
+        if (selected) await loadFolder(selected.sourceId, selected.folder, true);
+        return;
+      }
+      await refreshSources();
+      if (inOpenFolder && selected) {
+        // Re-indexação local (arquivos .eml compactam posições; itens PST
+        // mantêm a posição bruta deslocada pelo novo arcCount) — sem reload.
+        const oldArc = items.filter((m) => m.local).length;
+        const newArc = remaining.filter((m) => m.local).length;
+        let li = 0;
+        const reindexed = remaining.map((m) =>
+          m.local ? { ...m, index: li++ } : { ...m, index: newArc + (m.index - oldArc) },
+        );
+        detailCache.current.clear();
+        setItems(reindexed);
+        const next =
+          (nextFp ? reindexed.find((it) => itemFp(it) === nextFp) : undefined) ??
+          (nextPos >= 0 ? reindexed[Math.min(nextPos, reindexed.length - 1)] : undefined);
+        if (next) {
+          setSelIndexes(new Set([next.index]));
+          void selectItem(next, sourceId, folderId);
+        }
+        void window.outlook
+          .getItemCount(sourceId, folderId)
+          .then((cnt) => {
+            if (cnt === reindexed.length) return;
+            itemsCache.current.delete(`${sourceId}|${folderId}`);
+            void loadFolder(sourceId, selected.folder, true);
+          })
+          .catch(() => {});
+      } else if (selected) {
+        // Item de outra pasta (resultado de busca) — só revalida a aberta.
+        await loadFolder(selected.sourceId, selected.folder, true);
       }
     },
-    [selected, loadFolder, refreshSources],
+    [selected, items, detail, detailRef, loadFolder, refreshSources, selectItem],
   );
 
   /**
@@ -1816,14 +1959,21 @@ export default function App() {
   const msgCtxAction = useCallback(
     async (
       action: string,
-      ctx: { sourceId: string; folderId: string; index: number; indexes: number[]; isRead: boolean },
+      ctx: {
+        sourceId: string;
+        folderId: string;
+        index: number;
+        indexes: number[];
+        isRead: boolean;
+        senders?: string[];
+      },
     ) => {
       const indexes = ctx.indexes.length ? ctx.indexes : [ctx.index];
       try {
         if (action === 'reply' || action === 'replyAll' || action === 'forward') {
           const d = await window.outlook.getItem(ctx.sourceId, ctx.folderId, ctx.index);
           if (action === 'forward') {
-            setComposeDraft({
+            openDraft({
               accountId: defaultAccountId(),
               kind: 'forward',
               to: '',
@@ -1832,7 +1982,7 @@ export default function App() {
               quoteHtml: quoteHtml(d),
             });
           } else {
-            setComposeDraft({
+            openDraft({
               accountId: defaultAccountId(),
               kind: 'reply',
               to: d.senderEmailAddress || d.senderName,
@@ -1844,19 +1994,56 @@ export default function App() {
           }
         } else if (action === 'markRead' || action === 'markUnread') {
           const read = action === 'markRead';
-          let skipped = 0;
+          // setItemRead cobre .eml locais e itens do PST (override lógico) —
+          // não há gate de "somente leitura" para estado de leitura.
           for (const ix of indexes) {
-            if (await window.outlook.isLocalItem(ctx.sourceId, ctx.folderId, ix)) {
-              await window.outlook.setItemRead(ctx.sourceId, ctx.folderId, ix, read);
-            } else skipped++;
+            await window.outlook.setItemRead(ctx.sourceId, ctx.folderId, ix, read);
           }
-          if (skipped) setError(`${skipped} item(ns) do PST são somente leitura.`);
-          await refreshSources();
-          if (selected) await loadFolder(selected.sourceId, selected.folder);
+          const ixSet = new Set(indexes);
+          // loadFolder não re-baixaria (a contagem não muda) — reflete o
+          // novo isRead direto nos itens e no cache da pasta.
+          const upd = (list: ItemSummary[]) =>
+            list.map((it) => (ixSet.has(it.index) ? { ...it, isRead: read } : it));
+          const ck = `${ctx.sourceId}|${ctx.folderId}`;
+          const hit = itemsCache.current.get(ck);
+          if (hit) itemsCache.current.set(ck, upd(hit));
+          if (selected?.sourceId === ctx.sourceId && selected.folder.id === ctx.folderId) {
+            setItems((prev) => upd(prev));
+          }
+          applyTree(ctx.sourceId, await window.outlook.getFolderTree(ctx.sourceId));
         } else if (action === 'junk') {
-          await moveIndexesTo(ctx.sourceId, ctx.folderId, indexes, 'arc:Lixo eletrônico');
+          const tree = folderTrees[ctx.sourceId] || [];
+          await moveIndexesTo(ctx.sourceId, ctx.folderId, indexes, arcFolderId(tree, 'junk', lang));
+        } else if (action === 'blockSender') {
+          // Bloqueia o(s) remetente(s) e joga a(s) mensagem(ns) no Lixo —
+          // as próximas entregas caem direto lá (filtro no processo principal).
+          // ctx.senders já vem resolvido pelo MessageList (funciona também em
+          // resultados de busca, onde itemsRef não cobre o item).
+          const addrs = new Set<string>((ctx.senders ?? []).map((a) => a.toLowerCase()));
+          if (!addrs.size) {
+            setError(t('Não foi possível identificar o endereço do remetente.'));
+          } else {
+            for (const a of addrs) await window.outlook.blockedAdd(a);
+            await moveIndexesTo(
+              ctx.sourceId,
+              ctx.folderId,
+              indexes,
+              arcFolderId(folderTrees[ctx.sourceId] || [], 'junk', lang),
+            );
+            setNotice(
+              addrs.size === 1
+                ? t('"{a}" bloqueado — próximas mensagens vão direto para a pasta de lixo eletrônico.', { a: [...addrs][0] })
+                : t('{n} remetentes bloqueados — próximas mensagens vão para a pasta de lixo eletrônico.', { n: addrs.size }),
+            );
+            setTimeout(() => setNotice(''), 8000);
+          }
         } else if (action === 'archive') {
-          await moveIndexesTo(ctx.sourceId, ctx.folderId, indexes, 'arc:Arquivo Morto');
+          await moveIndexesTo(
+            ctx.sourceId,
+            ctx.folderId,
+            indexes,
+            arcFolderId(folderTrees[ctx.sourceId] || [], 'archive', lang),
+          );
         } else if (action === 'delete') {
           // Mesma lógica do botão Excluir: fora da lixeira move direto para
           // "Itens Excluídos" (recuperável — sem pergunta); dentro da lixeira a
@@ -1865,7 +2052,7 @@ export default function App() {
           const inTrash = isTrashFolder(ctx.folderId, ctxNode);
           const n = indexes.length;
           const run = async () => {
-            setLoading(n > 1 ? `Excluindo ${n} itens…` : 'Excluindo…');
+            setLoading(n > 1 ? t('Excluindo {n} itens…', { n }) : t('Excluindo…'));
             try {
               // Em lote: fora da lixeira TUDO vai para "Itens Excluídos"
               // (antes itens locais eram apagados permanentemente aqui);
@@ -1874,7 +2061,11 @@ export default function App() {
                 await window.outlook.deleteItems(ctx.sourceId, ctx.folderId, indexes);
               } else {
                 await window.outlook.moveItems(
-                  ctx.sourceId, ctx.folderId, indexes, ctx.sourceId, 'arc:Itens Excluídos',
+                  ctx.sourceId,
+                  ctx.folderId,
+                  indexes,
+                  ctx.sourceId,
+                  arcFolderId(folderTrees[ctx.sourceId] || [], 'deleted', lang),
                 );
               }
               setError('');
@@ -1919,7 +2110,7 @@ export default function App() {
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [selected, loadFolder, refreshSources, moveIndexesTo, openSettings, defaultAccountId, applyCategories],
+    [selected, loadFolder, refreshSources, moveIndexesTo, openSettings, defaultAccountId, applyCategories, folderTrees, lang],
   );
 
   const entries = applySourceOrder(sources, folderOrders).map((s) => ({
@@ -1964,14 +2155,22 @@ export default function App() {
   /** Pastas de enviados não têm filtro "Não lidos" — tudo que você enviou já é lido. */
   const isSentFolder =
     !!selected &&
-    /itens enviados|caixa de sa[ií]da|sent items|outbox|rascunhos|drafts/i.test(selected.folder.name);
+    (folderKindOf(selected.folder.name) === 'sent' ||
+      folderKindOf(selected.folder.name) === 'outbox' ||
+      folderKindOf(selected.folder.name) === 'drafts' ||
+      /itens enviados|caixa de sa[ií]da|sent items|outbox|rascunhos|drafts/i.test(
+        selected.folder.name,
+      ));
   const folderTargets: Array<{ id: string | null; label: string }> = [];
   if (selected) {
-    folderTargets.push({ id: null, label: '（raiz da base）' });
+    folderTargets.push({ id: null, label: t('（raiz da base）') });
     const flat = (nodes: FolderNode[], depth: number) => {
       for (const n of nodes) {
         if (n.id === selected.folder.id || n.id.startsWith(`${selected.folder.id}/`)) continue;
-        folderTargets.push({ id: n.id, label: `${'　'.repeat(depth)}${n.name}` });
+        folderTargets.push({
+          id: n.id,
+          label: `${'　'.repeat(depth)}${localizeFolderName(n.name, lang)}`,
+        });
         flat(n.children, depth + 1);
       }
     };
@@ -1984,6 +2183,29 @@ export default function App() {
         <div className="win-titlebar">
           <Icon name="envelope" size={16} />
           <span className="win-title">Unit Mail</span>
+          <span className="beta-pill" title="Versão Beta — em fase de testes. Reporte problemas no GitHub.">
+            Beta
+          </span>
+        </div>
+      )}
+      {updateInfo && (
+        <div className="update-bar" role="status">
+          <span>
+            Nova versão <strong>v{updateInfo.latest}</strong> disponível.
+          </span>
+          <button
+            className="upd-btn"
+            onClick={() => window.outlook.openExternal?.(updateInfo.url)}
+          >
+            Baixar atualização
+          </button>
+          <button
+            className="upd-close"
+            title="Avisar depois"
+            onClick={() => setUpdateInfo(null)}
+          >
+            <Icon name="x" size={12} />
+          </button>
         </div>
       )}
       <Ribbon
@@ -2005,6 +2227,7 @@ export default function App() {
         onForward={openForward}
         onSendReceive={sendReceive}
         onSyncAccount={syncOne}
+        onShowProgress={() => setShowSyncDialog(true)}
         onLayoutChange={setLayout}
         onDeleteItem={deleteItem}
         onMoveItemTo={moveItemTo}
@@ -2049,13 +2272,13 @@ export default function App() {
         showOnboarding ? null : (
         <div className="welcome">
           <Icon name="logo" size={96} />
-          <h1>Selecione arquivos de dados ou configure suas contas</h1>
+          <h1>{t('Selecione arquivos de dados ou configure suas contas')}</h1>
           <div style={{ display: 'flex', gap: 10 }}>
             <button className="open-btn" onClick={() => openSettings('data')}>
-              Arquivos de dados…
+              {t('Arquivos de dados…')}
             </button>
             <button className="open-btn" style={{ background: 'var(--surface)', color: 'var(--blue)', border: '1px solid var(--blue)' }} onClick={() => openSettings('email')}>
-              Configurar contas…
+              {t('Configurar contas…')}
             </button>
           </div>
           {error && <div style={{ color: '#c00' }}>{error}</div>}
@@ -2381,49 +2604,49 @@ export default function App() {
           >
             <div className="compose-title msg-title">
               <h2 title={openMsg.detail.subject}>
-                <Icon name="envelope" size={16} /> {openMsg.detail.subject || '(sem assunto)'}
+                <Icon name="envelope" size={16} /> {openMsg.detail.subject || t('(sem assunto)')}
               </h2>
               <div className="msg-actions">
                 <button
                   className="btn btn-ghost"
-                  onClick={() => setComposeDraft(replyDraftOf(openMsg.detail, false))}
+                  onClick={() => openDraft(replyDraftOf(openMsg.detail, false))}
                 >
-                  <Icon name="reply" size={14} /> Responder
+                  <Icon name="reply" size={14} /> {t('Responder')}
                 </button>
                 <button
                   className="btn btn-ghost"
-                  onClick={() => setComposeDraft(replyDraftOf(openMsg.detail, true))}
+                  onClick={() => openDraft(replyDraftOf(openMsg.detail, true))}
                 >
-                  <Icon name="replyAll" size={14} /> Responder a todos
+                  <Icon name="replyAll" size={14} /> {t('Responder a Todos')}
                 </button>
                 <button
                   className="btn btn-ghost"
-                  onClick={() => setComposeDraft(forwardDraftOf(openMsg.detail))}
+                  onClick={() => openDraft(forwardDraftOf(openMsg.detail))}
                 >
-                  <Icon name="forward" size={14} /> Encaminhar
+                  <Icon name="forward" size={14} /> {t('Encaminhar')}
                 </button>
                 <button className="btn btn-ghost" onClick={printOpenMsg}>
-                  <Icon name="printer" size={14} /> Imprimir
+                  <Icon name="printer" size={14} /> {t('Imprimir')}
                 </button>
               </div>
               <div className="msg-winctl">
                 <span
                   className="winctl"
-                  title="Minimizar"
+                  title={t('Minimizar')}
                   onClick={() => { setOpenMsg(null); setMsgMax(false); }}
                 >
                   –
                 </span>
                 <span
                   className="winctl"
-                  title={msgMax ? 'Restaurar' : 'Maximizar'}
+                  title={msgMax ? t('Restaurar') : t('Maximizar')}
                   onClick={() => setMsgMax(!msgMax)}
                 >
                   {msgMax ? '❐' : '▢'}
                 </span>
                 <span
                   className="winctl close"
-                  title="Fechar"
+                  title={t('Fechar')}
                   onClick={() => { setOpenMsg(null); setMsgMax(false); }}
                 >
                   <Icon name="close" size={14} />
@@ -2450,14 +2673,6 @@ export default function App() {
           primarySourceId={apptSourceId}
           onClose={() => setNewItemKind(null)}
           onSave={saveSpecialItem}
-        />
-      )}
-      {composeDraft && (
-        <ComposeModal
-          draft={composeDraft}
-          accounts={accounts}
-          onClose={() => setComposeDraft(null)}
-          onSent={() => setComposeDraft(null)}
         />
       )}
       {showCatsDlg && (

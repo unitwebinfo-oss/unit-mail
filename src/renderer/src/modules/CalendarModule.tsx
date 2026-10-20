@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Icon } from '../icons';
 import { fmtTime, fmtDateTime } from '../utils';
+import { locale, t, useLang } from '../i18n';
 import { Splitter } from '../components/Splitter';
 import { externalizeLinks } from '../components/ReadingPane';
 import type { FolderNode, ItemDetail, ItemSummary } from '../../../shared/types';
@@ -24,13 +25,21 @@ interface CalendarModuleProps {
   calendars: CalendarRef[];
 }
 
-// Semana começa no domingo, como no Outlook
-const DOW = ['DOMINGO', 'SEGUNDA-FEIRA', 'TERÇA-FEIRA', 'QUARTA-FEIRA', 'QUINTA-FEIRA', 'SEXTA-FEIRA', 'SÁBADO'];
-const DOW_MINI = ['D', 'S', 'T', 'Q', 'Q', 'S', 'S'];
-const MONTHS = [
-  'Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho',
-  'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro',
-];
+// Semana começa no domingo, como no Outlook. Nomes de dias/meses vêm do
+// Intl no idioma da interface — segue a troca de idioma sem tabela fixa.
+// 07/01/2024 era domingo — base para gerar os nomes na ordem certa.
+const DOW_BASE = new Date(2024, 0, 7);
+function dowNames(fmt: 'long' | 'narrow'): string[] {
+  const f = new Intl.DateTimeFormat(locale(), { weekday: fmt });
+  const names = Array.from({ length: 7 }, (_, i) =>
+    f.format(new Date(DOW_BASE.getFullYear(), DOW_BASE.getMonth(), DOW_BASE.getDate() + i)),
+  );
+  return fmt === 'long' ? names.map((n) => n.toUpperCase()) : names;
+}
+function monthNames(): string[] {
+  const f = new Intl.DateTimeFormat(locale(), { month: 'long' });
+  return Array.from({ length: 12 }, (_, m) => f.format(new Date(2024, m, 1)));
+}
 
 function dayKey(d: Date): string {
   return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
@@ -52,6 +61,9 @@ function MiniMonth({
   selectedDay: string;
   onPick: (d: Date) => void;
 }) {
+  useLang();
+  const months = monthNames();
+  const dowMini = dowNames('narrow');
   const y = viewDate.getFullYear();
   const m = viewDate.getMonth();
   const first = new Date(y, m, 1);
@@ -66,10 +78,10 @@ function MiniMonth({
   return (
     <div className="mini-month">
       <div className="mini-title">
-        {MONTHS[m].toLowerCase()} {y}
+        {months[m]} {y}
       </div>
       <div className="mini-grid">
-        {DOW_MINI.map((d, i) => (
+        {dowMini.map((d, i) => (
           <span key={i} className="mini-dow">
             {d}
           </span>
@@ -100,54 +112,55 @@ function AppointmentInspector({
   item: ItemDetail;
   onClose: () => void;
 }) {
+  useLang();
   return (
     <div className="modal-overlay" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
       <div className="appt-window" onClick={(e) => e.stopPropagation()}>
         <div className="compose-title">
           <h2>
-            <Icon name="calendar" size={16} /> {item.subject || 'Compromisso'}
+            <Icon name="calendar" size={16} /> {item.subject || t('Compromisso')}
           </h2>
-          <span className="close-x danger" title="Fechar" onClick={onClose}>
+          <span className="close-x danger" title={t('Fechar')} onClick={onClose}>
             <Icon name="close" size={16} />
           </span>
         </div>
         <div className="appt-body">
           <div className="appt-row">
-            <span className="appt-k">Início</span>
+            <span className="appt-k">{t('Início')}</span>
             <span>{fmtDateTime(item.startTime)}</span>
           </div>
           <div className="appt-row">
-            <span className="appt-k">Término</span>
+            <span className="appt-k">{t('Término')}</span>
             <span>{fmtDateTime(item.endTime)}</span>
           </div>
           {item.location && (
             <div className="appt-row">
-              <span className="appt-k">Local</span>
+              <span className="appt-k">{t('Local')}</span>
               <span>{item.location}</span>
             </div>
           )}
           {item.organizer && (
             <div className="appt-row">
-              <span className="appt-k">Organizador</span>
+              <span className="appt-k">{t('Organizador')}</span>
               <span>{item.organizer}</span>
             </div>
           )}
           {item.requiredAttendees && (
             <div className="appt-row">
-              <span className="appt-k">Obrigatório</span>
+              <span className="appt-k">{t('Obrigatório')}</span>
               <span>{item.requiredAttendees}</span>
             </div>
           )}
           {item.allAttendees && (
             <div className="appt-row">
-              <span className="appt-k">Participantes</span>
+              <span className="appt-k">{t('Participantes')}</span>
               <span>{item.allAttendees}</span>
             </div>
           )}
           {item.isRecurring && (
             <div className="appt-row">
-              <span className="appt-k">Recorrência</span>
-              <span>{item.recurrencePattern || 'Sim'}</span>
+              <span className="appt-k">{t('Recorrência')}</span>
+              <span>{item.recurrencePattern || t('Sim')}</span>
             </div>
           )}
           {(item.bodyHTML || item.body) && (
@@ -178,6 +191,7 @@ export function CalendarModule({
   onSelect,
   calendars,
 }: CalendarModuleProps) {
+  useLang();
   const today = new Date();
   const [viewDate, setViewDate] = useState(new Date(today.getFullYear(), today.getMonth(), 1));
   const [selectedDay, setSelectedDay] = useState<string>(dayKey(today));
@@ -336,26 +350,26 @@ export function CalendarModule({
       {/* Painel esquerdo: mini-meses + Meus Calendários */}
       <div className="cal-side left" style={{ width: sideW }}>
         <div className="mini-nav">
-          <button className="cal-nav" title="Mês anterior" onClick={() => nav(-1)}>‹</button>
+          <button className="cal-nav" title={t('Mês anterior')} onClick={() => nav(-1)}>‹</button>
           <button
             className="cal-nav"
-            title="Ir para hoje"
+            title={t('Ir para hoje')}
             onClick={() => {
               setSelectedDay(dayKey(today));
               setViewDate(new Date(today.getFullYear(), today.getMonth(), 1));
             }}
           >
-            Hoje
+            {t('Hoje')}
           </button>
-          <button className="cal-nav" title="Próximo mês" onClick={() => nav(1)}>›</button>
+          <button className="cal-nav" title={t('Próximo mês')} onClick={() => nav(1)}>›</button>
         </div>
         <MiniMonth viewDate={viewDate} selectedDay={selectedDay} onPick={pickDay} />
         <MiniMonth viewDate={nextMonth} selectedDay={selectedDay} onPick={pickDay} />
         <div className="my-cals">
-          <h4>Meus Calendários</h4>
+          <h4>{t('Meus Calendários')}</h4>
           {calendars.length === 0 && (
             <div className="empty-list" style={{ padding: 8 }}>
-              Nenhum calendário aberto
+              {t('Nenhum calendário aberto')}
             </div>
           )}
           {calendars.map((c) => (
@@ -396,19 +410,19 @@ export function CalendarModule({
             ›
           </button>
           <h2>
-            {MONTHS[viewDate.getMonth()].toLowerCase()} {viewDate.getFullYear()}
+            {monthNames()[viewDate.getMonth()]} {viewDate.getFullYear()}
           </h2>
           <div className="cal-search">
             <Icon name="search" size={14} />
             <input
-              placeholder="Pesquisar Calendário"
+              placeholder={t('Pesquisar Calendário')}
               value={search}
               onChange={(e) => setSearch(e.target.value)}
             />
           </div>
         </div>
         <div className="cal-grid">
-          {DOW.map((d) => (
+          {dowNames('long').map((d) => (
             <div key={d} className="cal-dow">
               {d}
             </div>
@@ -431,7 +445,7 @@ export function CalendarModule({
                   <div
                     key={`${ev.calKey}-${ev.index}-${j}`}
                     className="cal-event"
-                    title={`${ev.subject} — duplo clique abre os detalhes`}
+                    title={t('{subject} — duplo clique abre os detalhes', { subject: ev.subject })}
                     onClick={(e) => {
                       e.stopPropagation();
                       setSelectedDay(k);
@@ -448,7 +462,7 @@ export function CalendarModule({
                 ))}
                 {evs.length > 4 && (
                   <div style={{ color: 'var(--text-dim)', fontSize: 11 }}>
-                    +{evs.length - 4} mais
+                    {t('+{n} mais', { n: evs.length - 4 })}
                   </div>
                 )}
               </div>

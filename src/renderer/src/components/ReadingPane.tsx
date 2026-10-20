@@ -1,5 +1,6 @@
 import React, { useMemo } from 'react';
 import { Icon } from '../icons';
+import { t, useLang } from '../i18n';
 import { fmtFullDate, fmtDateTime, fmtSize } from '../utils';
 import type { ItemDetail, MailCategory } from '../../../shared/types';
 
@@ -62,8 +63,7 @@ function MailBody({ item, loadRemoteImages }: { item: ItemDetail; loadRemoteImag
       <>
         {blocked && (
           <div className="img-blocked-bar">
-            Para proteger sua privacidade, as imagens externas desta mensagem foram bloqueadas.
-            Ative em Configurações de Conta → Geral.
+            {t('Para proteger sua privacidade, as imagens externas desta mensagem foram bloqueadas. Ative em Configurações de Conta → Geral.')}
           </div>
         )}
         {/* iframe sandboxed: sem scripts; allow-popups permite links abrirem
@@ -76,7 +76,7 @@ function MailBody({ item, loadRemoteImages }: { item: ItemDetail; loadRemoteImag
       </>
     );
   }
-  return <pre>{item.body || '(sem conteúdo)'}</pre>;
+  return <pre>{item.body || t('(sem conteúdo)')}</pre>;
 }
 
 /** Ícone + cor do anexo por extensão (estilo dos ícones de arquivo do SO). */
@@ -131,35 +131,35 @@ function AppointmentDetail({ item, loadRemoteImages }: { item: ItemDetail; loadR
     <div className="detail-card">
       <h2>{item.subject}</h2>
       <div className="field">
-        <span className="k">Início</span>
+        <span className="k">{t('Início')}</span>
         <span>{fmtDateTime(item.startTime)}</span>
       </div>
       <div className="field">
-        <span className="k">Término</span>
+        <span className="k">{t('Término')}</span>
         <span>{fmtDateTime(item.endTime)}</span>
       </div>
       {item.location && (
         <div className="field">
-          <span className="k">Local</span>
+          <span className="k">{t('Local')}</span>
           <span>{item.location}</span>
         </div>
       )}
       {item.organizer && (
         <div className="field">
-          <span className="k">Organizador</span>
+          <span className="k">{t('Organizador')}</span>
           <span>{item.organizer}</span>
         </div>
       )}
       {item.requiredAttendees && (
         <div className="field">
-          <span className="k">Participantes</span>
+          <span className="k">{t('Participantes')}</span>
           <span>{item.requiredAttendees}</span>
         </div>
       )}
       {item.isRecurring && (
         <div className="field">
-          <span className="k">Recorrência</span>
-          <span>{item.recurrencePattern || 'Sim'}</span>
+          <span className="k">{t('Recorrência')}</span>
+          <span>{item.recurrencePattern || t('Sim')}</span>
         </div>
       )}
       {(item.body || item.bodyHTML) && (
@@ -196,7 +196,7 @@ function ContactDetailView({ item }: { item: ItemDetail }) {
         .filter(([, v]) => v)
         .map(([k, v]) => (
           <div className="field" key={k}>
-            <span className="k">{k}</span>
+            <span className="k">{t(k)}</span>
             <span>{v}</span>
           </div>
         ))}
@@ -208,40 +208,40 @@ function ContactDetailView({ item }: { item: ItemDetail }) {
 const TASK_STATUS = ['Não iniciada', 'Em andamento', 'Concluída', 'Aguardando', 'Adiada'];
 
 function TaskDetailView({ item }: { item: ItemDetail }) {
-  const t = item.task;
-  if (!t) return <pre>{item.body}</pre>;
+  const task = item.task;
+  if (!task) return <pre>{item.body}</pre>;
   return (
     <div className="detail-card">
       <h2>{item.subject}</h2>
       <div className="field">
-        <span className="k">Status</span>
-        <span>{TASK_STATUS[t.status] ?? t.status}</span>
+        <span className="k">{t('Status')}</span>
+        <span>{t(TASK_STATUS[task.status] ?? String(task.status))}</span>
       </div>
       <div className="field">
-        <span className="k">% concluída</span>
-        <span>{t.percentComplete}%</span>
+        <span className="k">{t('% concluída')}</span>
+        <span>{task.percentComplete}%</span>
       </div>
       <div className="field">
-        <span className="k">Início</span>
-        <span>{fmtDateTime(t.startDate)}</span>
+        <span className="k">{t('Início')}</span>
+        <span>{fmtDateTime(task.startDate)}</span>
       </div>
       <div className="field">
-        <span className="k">Vencimento</span>
-        <span>{fmtDateTime(t.dueDate)}</span>
+        <span className="k">{t('Vencimento')}</span>
+        <span>{fmtDateTime(task.dueDate)}</span>
       </div>
-      {t.dateCompleted && (
+      {task.dateCompleted && (
         <div className="field">
-          <span className="k">Concluída em</span>
-          <span>{fmtDateTime(t.dateCompleted)}</span>
+          <span className="k">{t('Concluída em')}</span>
+          <span>{fmtDateTime(task.dateCompleted)}</span>
         </div>
       )}
-      {t.owner && (
+      {task.owner && (
         <div className="field">
-          <span className="k">Responsável</span>
-          <span>{t.owner}</span>
+          <span className="k">{t('Responsável')}</span>
+          <span>{task.owner}</span>
         </div>
       )}
-      {t.body && <div className="notes">{t.body}</div>}
+      {task.body && <div className="notes">{task.body}</div>}
     </div>
   );
 }
@@ -275,12 +275,12 @@ function InviteBar({
   if (inv.method === 'CANCEL') {
     return (
       <div className="invite-bar cancelled">
-        Esta reunião foi cancelada pelo organizador.
+        {t('Esta reunião foi cancelada pelo organizador.')}
       </div>
     );
   }
   if (inv.method === 'REPLY') {
-    return <div className="invite-bar">Esta mensagem é uma resposta a um convite de reunião.</div>;
+    return <div className="invite-bar">{t('Esta mensagem é uma resposta a um convite de reunião.')}</div>;
   }
   return (
     <div className="invite-bar">
@@ -292,7 +292,7 @@ function InviteBar({
             {fmtDateTime(inv.start)}
             {inv.end ? ` – ${fmtDateTime(inv.end)}` : ''}
             {inv.location ? ` · ${inv.location}` : ''}
-            {inv.organizer ? ` · Organizador: ${inv.organizer}` : ''}
+            {inv.organizer ? ` · ${t('Organizador')}: ${inv.organizer}` : ''}
           </span>
         </div>
       </div>
@@ -301,27 +301,27 @@ function InviteBar({
           className="accept"
           onClick={() => {
             onRespond?.('accept');
-            setDone('Convite aceito');
+            setDone(t('Convite aceito'));
           }}
         >
-          Aceitar
+          {t('Aceitar')}
         </button>
         <button
           onClick={() => {
             onRespond?.('decline');
-            setDone('Convite recusado');
+            setDone(t('Convite recusado'));
           }}
         >
-          Recusar
+          {t('Recusar')}
         </button>
         <button onClick={() => setCounter((v) => !v)}>
-          {counter ? 'Cancelar proposta' : 'Propor novo horário…'}
+          {counter ? t('Cancelar proposta') : t('Propor novo horário…')}
         </button>
       </div>
       {counter && (
         <div className="invite-counter">
           <label>
-            Início
+            {t('Início')}
             <input
               type="datetime-local"
               value={ns}
@@ -329,7 +329,7 @@ function InviteBar({
             />
           </label>
           <label>
-            Término
+            {t('Término')}
             <input
               type="datetime-local"
               value={ne}
@@ -341,10 +341,10 @@ function InviteBar({
             disabled={!ns}
             onClick={() => {
               onRespond?.('counter', new Date(ns).toISOString(), ne ? new Date(ne).toISOString() : undefined);
-              setDone('Nova proposta de horário enviada');
+              setDone(t('Nova proposta de horário enviada'));
             }}
           >
-            Enviar proposta
+            {t('Enviar proposta')}
           </button>
         </div>
       )}
@@ -368,6 +368,7 @@ export function ReadingPane({
   onSaveAs,
   categories,
 }: ReadingPaneProps) {
+  const lang = useLang();
   const [attachMenu, setAttachMenu] = React.useState<number | null>(null);
   const [moreOpen, setMoreOpen] = React.useState(false);
   const catById = useMemo(
@@ -417,14 +418,14 @@ export function ReadingPane({
         ) : null}
         {!isContact && !isTask && (
           <div className="rp-meta">
-            <span className="lbl">De:</span>
+            <span className="lbl">{t('De')}:</span>
             <span>
               {item.senderName}
               {item.senderEmailAddress ? ` <${item.senderEmailAddress}>` : ''}
             </span>
             {item.displayTo && (
               <>
-                <span className="lbl">Para:</span>
+                <span className="lbl">{t('Para')}:</span>
                 <span>{item.displayTo}</span>
               </>
             )}
@@ -436,7 +437,7 @@ export function ReadingPane({
             )}
             {isAppointment && (
               <>
-                <span className="lbl">Início:</span>
+                <span className="lbl">{t('Início')}:</span>
                 <span>
                   {fmtDateTime(item.startTime)} – {fmtDateTime(item.endTime)}
                 </span>
@@ -444,7 +445,7 @@ export function ReadingPane({
             )}
             {!showActions && !isAppointment && (
               <>
-                <span className="lbl">Data:</span>
+                <span className="lbl">{t('Data')}:</span>
                 <span>{fmtFullDate(item.deliveryTime || item.sentTime)}</span>
               </>
             )}
@@ -452,7 +453,7 @@ export function ReadingPane({
         )}
       </div>
     );
-  }, [item, isContact, isTask, isAppointment, showActions, catById]);
+  }, [item, isContact, isTask, isAppointment, showActions, catById, lang]);
 
   if (loading) {
     return (
@@ -469,7 +470,7 @@ export function ReadingPane({
       <div className="reading-pane">
         <div className="rp-empty">
           <Icon name="envelope" />
-          <div>Selecione um item para ler</div>
+          <div>{t('Selecione um item para ler')}</div>
         </div>
       </div>
     );
@@ -482,22 +483,22 @@ export function ReadingPane({
         {showActions && (
           <div className="rp-head-actions">
             <div className="rp-action-row">
-              <button onClick={onReply} title="Responder">
+              <button onClick={onReply} title={t('Responder')}>
                 <Icon name="reply" size={14} />
-                Responder
+                {t('Responder')}
               </button>
-              <button onClick={onReplyAll} title="Responder a todos">
+              <button onClick={onReplyAll} title={t('Responder a todos')}>
                 <Icon name="replyAll" size={14} />
-                Responder a Todos
+                {t('Responder a Todos')}
               </button>
-              <button onClick={onForward} title="Encaminhar">
+              <button onClick={onForward} title={t('Encaminhar')}>
                 <Icon name="forward" size={14} />
-                Encaminhar
+                {t('Encaminhar')}
               </button>
               <span className="rp-more">
                 <button
                   className="rp-more-btn"
-                  title="Mais ações"
+                  title={t('Mais ações')}
                   onClick={() => setMoreOpen((v) => !v)}
                 >
                   …
@@ -514,7 +515,7 @@ export function ReadingPane({
                           }}
                         >
                           <Icon name="fileTxt" size={14} />
-                          Salvar como…
+                          {t('Salvar como…')}
                         </button>
                       )}
                       {onPrint && (
@@ -525,7 +526,7 @@ export function ReadingPane({
                           }}
                         >
                           <Icon name="printer" size={14} />
-                          Imprimir…
+                          {t('Imprimir…')}
                         </button>
                       )}
                       {onDelete && (
@@ -537,7 +538,7 @@ export function ReadingPane({
                           }}
                         >
                           <Icon name="trash" size={14} />
-                          Excluir
+                          {t('Excluir')}
                         </button>
                       )}
                     </div>
@@ -560,7 +561,7 @@ export function ReadingPane({
               <span key={a.index} className="attach-chip">
                 <button
                   className="attach-main"
-                  title="Abrir"
+                  title={t('Abrir')}
                   onClick={() => openAttach(a.index)}
                 >
                   <span className="attach-badge" style={{ color: badge.color }}>
@@ -571,7 +572,7 @@ export function ReadingPane({
                 </button>
                 <button
                   className="attach-caret"
-                  title="Opções do anexo"
+                  title={t('Opções do anexo')}
                   onClick={() => setAttachMenu(attachMenu === a.index ? null : a.index)}
                 >
                   <Icon name="chevronD" size={12} />
@@ -582,11 +583,11 @@ export function ReadingPane({
                     <span className="attach-menu">
                       <button onClick={() => openAttach(a.index)}>
                         <Icon name="open" size={14} />
-                        Abrir
+                        {t('Abrir')}
                       </button>
                       <button onClick={() => saveAttach(a.index)}>
                         <Icon name="download" size={14} />
-                        Salvar como…
+                        {t('Salvar como…')}
                       </button>
                     </span>
                   </>
@@ -597,7 +598,7 @@ export function ReadingPane({
           {item.attachments.length > 1 && onSaveAllAttachments && (
             <button className="attach-saveall" onClick={onSaveAllAttachments}>
               <Icon name="download" size={14} />
-              Salvar todos
+              {t('Salvar todos')}
             </button>
           )}
         </div>

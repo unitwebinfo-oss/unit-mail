@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, nativeTheme, Notification, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, nativeTheme, net, Notification, screen, shell } from 'electron';
 import { basename, join, resolve } from 'path';
 import { randomUUID, createHash } from 'crypto';
 import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync, cpSync } from 'fs';
@@ -8,11 +8,13 @@ import { PstService } from './pstService';
 import { accountStore, secureStorageAvailable, migrateSecrets } from './accountStore';
 import { sendMail, testAccount, resolveSignatureHtml, composeRawMessage } from './smtpService';
 import { avStatus } from './antivirus';
+import { blockedSenders } from './blockedSenders';
 import { recordRecipients, searchContacts } from './contactHistory';
-import { ruleEngine, ensureDeliveryStore, folderDirFor } from './ruleEngine';
+import { ruleEngine, ensureDeliveryStore, folderDirFor, kindDirFor, resolveStoreFolderName } from './ruleEngine';
 import { signatureStore } from './signatureStore';
 import { createLocalStore, deleteLocalStore, isLocalStorePath, listLocalStores, registerLocalStore, remapLocalStorePath, renameLocalStore, unregisterLocalStore } from './localStore';
-import { dataDir, mailRoot, setDataDir, isUnitMailProfile, scanMailDir } from './dataDir';
+import { dataDir, mailRoot, mailRootPath, setDataDir, isUnitMailProfile, scanMailDir } from './dataDir';
+import { appLanguage } from './language';
 import { log } from './logger';
 import { migratePstToLocalStore } from './pstImport';
 import { isWindowsImportAvailable, importOutlookAccountsFromRegistry } from './outlookImportWin';
@@ -43,9 +45,13 @@ interface Settings {
   defaultStorePath?: string;
   /** Tema da interface: 'system' segue o SO. */
   theme?: 'system' | 'light' | 'dark';
+  /** Idioma da interface — pt-BR ou en (pastas novas seguem o idioma). */
+  language?: 'pt' | 'en';
   /** Re-sincronização total única já executada (correção do estado "visto"
    *  envenenado por versões que entregavam em diretório fantasma). */
   fullResyncDone?: boolean;
+  /** Geometria da janela principal ao fechar (bounds normais + maximizada). */
+  windowState?: { width: number; height: number; x?: number; y?: number; maximized?: boolean };
 }
 
 function settingsPath(): string {
@@ -295,12 +301,17 @@ async function checkReminders(): Promise<void> {
         // Janela: de (início - X min) até 1h depois do início
         if (now >= remindAt && now <= start + 60 * 60000) {
           remindedKeys.add(key);
-          const body = `${new Date(it.startTime).toLocaleString('pt-BR')}${
-            it.location ? ` — ${it.location}` : ''
-          }`;
+          // Idioma da UI também na notificação nativa do SO
+          const lang = appLanguage();
+          const body = `${new Date(it.startTime).toLocaleString(
+            lang === 'en' ? 'en-US' : 'pt-BR',
+          )}${it.location ? ` — ${it.location}` : ''}`;
           try {
             if (Notification.isSupported()) {
-              new Notification({ title: `Lembrete: ${it.subject}`, body }).show();
+              new Notification({
+                title: lang === 'en' ? `Reminder: ${it.subject}` : `Lembrete: ${it.subject}`,
+                body,
+              }).show();
             }
           } catch {
             // notificação pode falhar em ambientes sem suporte
@@ -408,29 +419,78 @@ function splashStatus(msg: string): void {
     .catch(() => {});
 }
 
-function createWindow(): BrowserWindow {
-  const iconPath = appIcon();
+/** Estado salvo da janela — posição descartada se cair fora de todo monitor. */
+function savedWindowState(): {
+  width: number;
+  height: number;
+  x?: number;
+  y?: number;
+  maximized?: boolean;
+} | null {
+  const ws = loadSettings().windowState;
+  if (!ws || typeof ws.width !== 'number' || typeof ws.height !== 'number') return null;
+  const st = { ...ws, maximized: !!ws.maximized };
+  if (st.x !== undefined && st.y !== undefined) {
+    const onScreen = screen.getAllDisplays().some((d) => {
+      const a = d.workArea;
+      return (
+        st.x! >= a.x - 40 &&
+        st.y! >= a.y - 40 &&
+        st.x! < a.x + a.width &&
+        st.y! < a.y + a.height
+      );
+    });
+    if (!onScreen) {
+      st.x = undefined;
+      st.y = undefined;
+    }
+  }
+  return st;
+}
+
+/** Chrome da barra de título integrada (faixa azul) — principal e composição. */
+function windowChrome():
+  | {
+      titleBarStyle: 'hidden';
+      titleBarOverlay: { color: string; symbolColor: string; height: number };
+    }
+  | Record<string, never> {
   // Barra de título integrada: os botões min/max/close do sistema ficam
   // sobre uma faixa azul renderizada pelo app (estilo Office moderno).
   // titleBarOverlay é suportado no Windows e no Linux; sem ele o Linux
   // mostrava a moldura nativa (barra preta do GNOME/KDE) em vez do azul.
-  const winChrome =
-    process.platform === 'win32' || process.platform === 'linux'
-      ? {
-          titleBarStyle: 'hidden' as const,
-          titleBarOverlay: { color: '#0173c7', symbolColor: '#ffffff', height: 36 },
-        }
-      : {};
+  return process.platform === 'win32' || process.platform === 'linux'
+    ? {
+        titleBarStyle: 'hidden' as const,
+        titleBarOverlay: { color: '#0173c7', symbolColor: '#ffffff', height: 36 },
+      }
+    : {};
+}
 
+/** Cor de fundo da janela ANTES do renderer pintar — segue o tema salvo
+ *  para não piscar claro num perfil escuro (e vice-versa). */
+function windowBgForTheme(): string {
+  const theme = loadSettings().theme ?? 'system';
+  const dark = theme === 'dark' || (theme === 'system' && nativeTheme.shouldUseDarkColors);
+  return dark ? '#171717' : '#f3f3f3';
+}
+
+function createWindow(): BrowserWindow {
+  const iconPath = appIcon();
+  const winChrome = windowChrome();
+
+  const ws = savedWindowState();
   const win = new BrowserWindow({
-    width: 1440,
-    height: 900,
+    width: Math.max(1024, ws?.width ?? 1440),
+    height: Math.max(600, ws?.height ?? 900),
+    x: ws?.x,
+    y: ws?.y,
     minWidth: 1024,
     minHeight: 600,
     show: false,
     title: 'Unit Mail',
     icon: iconPath,
-    backgroundColor: '#f3f3f3',
+    backgroundColor: windowBgForTheme(),
     ...winChrome,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
@@ -453,13 +513,49 @@ function createWindow(): BrowserWindow {
     return { action: 'deny' };
   });
 
+  // Estava maximizada ao fechar → reabre maximizada. Chamar maximize() antes
+  // do show é seguro: a janela aparece já maximizada, sem piscar.
+  if (ws?.maximized) win.maximize();
+
+  // Persistência da geometria: getNormalBounds() devolve o tamanho de quando
+  // a janela NÃO está maximizada — é o valor certo para restaurar depois.
+  const saveWinState = () => {
+    if (win.isDestroyed()) return;
+    const s = loadSettings();
+    s.windowState = { ...win.getNormalBounds(), maximized: win.isMaximized() };
+    saveSettings(s);
+  };
+  let wsTimer: ReturnType<typeof setTimeout> | null = null;
+  const queueWinState = () => {
+    if (wsTimer) clearTimeout(wsTimer);
+    wsTimer = setTimeout(saveWinState, 600);
+  };
+  win.on('resize', queueWinState);
+  win.on('move', queueWinState);
+  win.on('maximize', queueWinState);
+  win.on('unmaximize', queueWinState);
+  win.on('close', saveWinState);
+
   mainWindow = win;
   win.on('closed', () => {
+    if (wsTimer) clearTimeout(wsTimer);
     if (mainWindow === win) mainWindow = null;
   });
 
   mainWindowReady = new Promise((resolve) => {
-    win.once('ready-to-show', resolve);
+    // ready-to-show dispara quando a página PODE pintar — mas o React ainda
+    // não montou e a janela aparecia em branco por um instante. Esperamos o
+    // renderer sinalizar o primeiro paint real (app:firstPaint, enviado
+    // depois do mount + double-RAF). Fallback: ready-to-show + margem, caso
+    // um renderer antigo não envie o sinal.
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      resolve();
+    };
+    ipcMain.once('app:firstPaint', finish);
+    win.once('ready-to-show', () => setTimeout(finish, 1500));
   });
 
   if (isDev) {
@@ -471,15 +567,103 @@ function createWindow(): BrowserWindow {
   return win;
 }
 
+// ---------- Janela de composição ----------
+// Rascunhos (novo email, resposta, encaminhamento) abrem numa janela REAL —
+// igual ao Outlook: o usuário pode minimizá-la e voltar ao app para copiar
+// dados, e reabrir a janela pela barra de tarefas. O rascunho viaja por um
+// id; a janela o busca via 'compose:getDraft' ao carregar.
+const composeDrafts = new Map<string, Record<string, unknown>>();
+
+function openComposeWindow(draft: Record<string, unknown>): void {
+  const id = randomUUID();
+  composeDrafts.set(id, draft);
+  const w = new BrowserWindow({
+    width: 980,
+    height: 720,
+    minWidth: 640,
+    minHeight: 460,
+    show: false,
+    title: 'Unit Mail — Mensagem',
+    icon: appIcon(),
+    backgroundColor: windowBgForTheme(),
+    ...windowChrome(),
+    webPreferences: {
+      preload: join(__dirname, '../preload/index.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+    },
+  });
+  w.setMenuBarVisibility(false);
+  w.once('ready-to-show', () => w.show());
+  w.on('closed', () => composeDrafts.delete(id));
+  if (isDev) {
+    w.loadURL(`${process.env.ELECTRON_RENDERER_URL}#/compose/${id}`);
+  } else {
+    w.loadFile(join(__dirname, '../renderer/index.html'), { hash: `/compose/${id}` });
+  }
+}
+
 function registerIpc(): void {
+  // ---------- Janela de composição ----------
+  ipcMain.handle('compose:openWindow', (_e, draft: Record<string, unknown>) =>
+    openComposeWindow(draft),
+  );
+  ipcMain.handle('compose:getDraft', (_e, id: string) => composeDrafts.get(id) ?? null);
+  ipcMain.handle('compose:notifySent', () => {
+    // A janela principal atualiza a lista (Itens Enviados) quando um
+    // rascunho aberto em janela separada é enviado.
+    mainWindow?.webContents.send('compose:sent');
+  });
+
   // ---------- Diálogos de arquivo ----------
   // ---------- Ajuda / Sobre ----------
+  /** "1.2.10" > "1.2.3"? — comparação semver simples (só números). */
+  const newerThan = (a: string, b: string): boolean => {
+    const pa = a.split(/[.-]/).map((n) => parseInt(n, 10) || 0);
+    const pb = b.split(/[.-]/).map((n) => parseInt(n, 10) || 0);
+    for (let i = 0; i < 4; i++) {
+      if ((pa[i] || 0) > (pb[i] || 0)) return true;
+      if ((pa[i] || 0) < (pb[i] || 0)) return false;
+    }
+    return false;
+  };
+
+  /** Verifica a última release no GitHub — usado na abertura e no menu Ajuda. */
+  ipcMain.handle('app:checkUpdate', async () => {
+    try {
+      const res = await net.fetch(
+        'https://api.github.com/repos/unitwebinfo-oss/unit-mail/releases/latest',
+        {
+          headers: {
+            'User-Agent': `unit-mail/${app.getVersion()}`,
+            Accept: 'application/vnd.github+json',
+          },
+        },
+      );
+      if (!res.ok) return null;
+      const data = (await res.json()) as { tag_name?: string; html_url?: string };
+      const latest = (data.tag_name || '').replace(/^v/i, '');
+      const current = app.getVersion();
+      return {
+        current,
+        latest,
+        url: data.html_url || `https://github.com/unitwebinfo-oss/unit-mail/releases`,
+        newer: !!latest && newerThan(latest, current),
+      };
+    } catch {
+      return null; // sem internet / rate-limit — silencioso
+    }
+  });
+
   ipcMain.handle('app:info', () => ({
     name: 'Unit Mail',
     version: app.getVersion(),
     license: 'GPL-3.0-only',
     userData: dataDir(),
-    documentsStoreDir: mailRoot(),
+    // mailRootPath: só devolve o caminho — mailRoot() CRIARIA a pasta e
+    // o renderer chama app:info no boot (antes do wizard escolher a raiz).
+    documentsStoreDir: mailRootPath(),
     electron: process.versions.electron,
     chrome: process.versions.chrome,
     node: process.versions.node,
@@ -709,56 +893,131 @@ function registerIpc(): void {
     return true;
   });
 
-  // "Executar Regras Agora" — aplica regras aos itens da pasta escolhida
-  // (só itens locais são movidos; itens gravados no PST são copiados).
-  // Com ruleIds, roda exatamente as regras marcadas — mesmo desativadas,
-  // como no diálogo "Executar regras agora" do Outlook. Sem ruleIds,
-  // usa as habilitadas (botão da barra de ações).
+  // Lista de remetentes bloqueados — mensagens deles caem direto em
+  // "Lixo eletrônico" na próxima entrega (como o Blocked Senders do Outlook).
+  ipcMain.handle('blocked:list', () => blockedSenders.list());
+  ipcMain.handle('blocked:add', (_e, entry: string) => blockedSenders.add(entry));
+  ipcMain.handle('blocked:remove', (_e, entry: string) => blockedSenders.remove(entry));
+
+  // "Executar Regras" — varre a pasta em páginas, do fim para o começo (remover
+  // um item só desloca índices maiores, já processados). Reporta progresso via
+  // 'rules:progress', cede o event loop a cada lote (a janela não fica "não
+  // respondendo") e pode ser cancelada por 'rules:cancelApply'.
+  // Com ruleIds, roda exatamente a regra escolhida — mesmo desativada.
+  // Sem ruleIds, usa as habilitadas (botão da barra de ações).
+  let rulesApplyCancelled = false;
+  ipcMain.on('rules:cancelApply', () => {
+    rulesApplyCancelled = true;
+  });
   ipcMain.handle(
     'rules:applyToFolder',
-    async (_e, sourceId: string, folderId: string, ruleIds?: string[]) => {
+    async (e, sourceId: string, folderId: string, ruleIds?: string[]) => {
     const { matchRule } = await import('./ruleEngine');
     const svc = sourceManager.backend(sourceId);
     const pst = svc as import('./pstService').PstService;
-    if (typeof pst.isLocalItem !== 'function') return { applied: 0 };
+    if (typeof pst.isLocalItem !== 'function') return { applied: 0, done: 0 };
     const all = ruleEngine.list();
     const rules = ruleIds?.length
       ? all.filter((r) => ruleIds.includes(r.id))
       : all.filter((r) => r.enabled);
     const sources = sourceManager.listAll();
-    const items = await svc.getItems(folderId, 0, 5000);
+    // E-mail por conta — o vínculo conta↔regra é checado mensagem a mensagem.
+    const acctEmail = new Map(
+      accountStore.list().map((a) => [a.id, (a.email || '').toLowerCase()]),
+    );
+    const total = await svc.getItemCount(folderId);
     let applied = 0;
-    // Processa do índice maior para o menor — remover itens não desloca os
-    // índices dos que ainda serão avaliados.
-    for (const it of [...items].reverse()) {
-      for (const rule of rules) {
-        if (
-          !matchRule(rule, {
-            from: `${it.senderEmailAddress} ${it.senderName}`,
-            to: it.displayTo,
-            subject: it.subject,
-          })
-        ) {
-          continue;
-        }
-        const target = sources.find((s) => s.filePath === rule.targetPstPath);
-        if (!target) break;
-        try {
-          await sourceManager.moveItem(
-            sourceId,
-            folderId,
-            it.index,
-            target.id,
-            `arc:${rule.targetFolder}`,
-          );
-          applied++;
-        } catch {
-          // destino não gravável ou item já movido — segue
-        }
-        break; // moveu (ou tentou) — próxima mensagem
+    let done = 0;
+    let targetMissing = 0;
+    rulesApplyCancelled = false;
+    const progress = () => {
+      try {
+        e.sender.send('rules:progress', { done, total, applied });
+      } catch {
+        // janela fechada no meio — segue
       }
+    };
+    const breathe = () => new Promise<void>((r) => setImmediate(r));
+    const PAGE = 250;
+    for (let end = total; end > 0 && !rulesApplyCancelled; ) {
+      const start = Math.max(0, end - PAGE);
+      const items = await svc.getItems(folderId, start, end - start);
+      for (const it of [...items].sort((a, b) => b.index - a.index)) {
+        if (rulesApplyCancelled) break;
+        // Regras de email só valem para emails — compromissos/contatos/tarefas
+        // (.eml com X-UM-Class) não entram na verificação, mas contam no
+        // progresso (foram "verificados").
+        const mc = it.messageClass || 'IPM.Note';
+        if (mc.startsWith('IPM.Note')) {
+        for (const rule of rules) {
+          // O vínculo conta↔regra é uma condição em si: no recebimento a regra
+          // só é avaliada para mensagens da conta dela. Na execução manual a
+          // pasta pode ter mensagens de qualquer conta — então a regra da conta
+          // X só casa itens em que o e-mail de X aparece (Para/Cc = recebida
+          // por ela, De = enviada por ela). Sem isso, uma regra de conta sem
+          // condições esvaziava a pasta inteira.
+          if (rule.accountId && rule.accountId !== 'all') {
+            const em = acctEmail.get(rule.accountId);
+            if (!em) break; // conta removida — regra não verificável
+            // O carimbo X-UM-Account (gravado na entrega) prova a conta mesmo
+            // quando o cabeçalho To não mostra (BCC/listas). Itens sem carimbo
+            // — importados de PST/Thunderbird — caem na checagem por
+            // De/Para/Cc do cabeçalho.
+            const stamped = (it.accountEmail || '').toLowerCase();
+            if (stamped) {
+              if (stamped !== em) continue;
+            } else {
+              const hay =
+                `${it.displayTo} ${it.displayCC} ${it.senderEmailAddress}`.toLowerCase();
+              if (!hay.includes(em)) continue;
+            }
+          }
+          if (
+            !matchRule(rule, {
+              from: `${it.senderEmailAddress} ${it.senderName}`,
+              to: `${it.displayTo} ${it.displayCC}`,
+              // O resumo guarda '(sem assunto)' como placeholder — não é texto
+              // real da mensagem. Sem isso, "Assunto contém sem/assunto" casava
+              // com todas as mensagens sem assunto.
+              subject: /^[(]sem (assunto|t[ií]tulo)[)]$/i.test(it.subject || '') ? '' : it.subject,
+            })
+          ) {
+            continue;
+          }
+          const target = sources.find((s) => s.filePath === rule.targetPstPath);
+          if (!target) {
+            targetMissing++;
+            break;
+          }
+          // Destino = a própria pasta varrida → já está onde a regra manda.
+          // Mover só criaria uma cópia reimportada a cada execução.
+          if (target.id === sourceId && `arc:${rule.targetFolder}` === folderId) break;
+          try {
+            await sourceManager.moveItem(
+              sourceId,
+              folderId,
+              it.index,
+              target.id,
+              `arc:${rule.targetFolder}`,
+            );
+            applied++;
+          } catch {
+            // destino não gravável ou item já movido — segue
+          }
+          break; // moveu (ou tentou) — próxima mensagem
+        }
+        }
+        done++;
+        if (done % 10 === 0) {
+          progress();
+          await breathe();
+        }
+      }
+      end = start;
+      await breathe();
     }
-    return { applied };
+    progress();
+    return { applied, done, cancelled: rulesApplyCancelled, targetMissing };
   });
 
   // Ordem de exibição das pastas (persistida — permite reordenar arrastando,
@@ -1006,8 +1265,11 @@ function registerIpc(): void {
     // aparecem como não lidos) e o envio acontece em segundo plano.
     let svc: PstService | null = null;
     let outboxFile: string | null = null;
+    // Fora do try — o envio assíncrono abaixo também usa (Caixa de Saída →
+    // Itens Enviados).
+    let store = '';
     try {
-      const store = ensureDeliveryStore(account);
+      store = ensureDeliveryStore(account);
       // Sem base de entrega configurada ('') pula a cópia local — o envio
       // continua independente disso.
       if (store) {
@@ -1021,11 +1283,11 @@ function registerIpc(): void {
         if (b instanceof PstService) svc = b;
       }
       if (raw && svc) {
-        outboxFile = svc.importNamedEml('Caixa de Saída', raw, true);
+        outboxFile = svc.importNamedEml(resolveStoreFolderName(store, 'outbox'), raw, true);
       } else if (raw) {
         // Fallback sem serviço: grava direto (o seed do readstate marca
         // arquivos antigos como lidos na primeira abertura da base)
-        const dir = folderDirFor(store, 'Caixa de Saída');
+        const dir = kindDirFor(store, 'outbox');
         mkdirSync(dir, { recursive: true });
         writeFileSync(join(dir, `${Date.now()}-${randomUUID().slice(0, 8)}.eml`), raw);
       }
@@ -1040,12 +1302,16 @@ function registerIpc(): void {
         await sendMail(account, password, input, accountStore.getSmtpPassword(accountId));
         // Sai da Caixa de Saída → Itens Enviados, como no Outlook
         if (svc && outboxFile) {
-          svc.moveNamedFile('Caixa de Saída', 'Itens Enviados', outboxFile);
+          svc.moveNamedFile(
+            resolveStoreFolderName(store, 'outbox'),
+            resolveStoreFolderName(store, 'sent'),
+            outboxFile,
+          );
         } else if (raw) {
           try {
             const sentStore = ensureDeliveryStore(account);
             if (sentStore) {
-              const dir = folderDirFor(sentStore, 'Itens Enviados');
+              const dir = kindDirFor(sentStore, 'sent');
               mkdirSync(dir, { recursive: true });
               writeFileSync(join(dir, `${Date.now()}-${randomUUID().slice(0, 8)}.eml`), raw);
             }
@@ -1248,7 +1514,9 @@ function registerIpc(): void {
         const pst = (defSrc ? sourceManager.backend(defSrc.id) : svc) as import('./pstService').PstService;
         try {
           if (typeof pst.importItemEml === 'function') {
-            await pst.importItemEml('arc:Calendário', Buffer.from(eml, 'utf8'));
+            // Pasta de calendário já existente (qualquer idioma) ou nome localizado
+            const calName = resolveStoreFolderName(defSrc?.filePath || '', 'calendar');
+            await pst.importItemEml(`arc:${calName}`, Buffer.from(eml, 'utf8'));
           }
         } catch {
           // base não gravável — a resposta já foi enviada
@@ -1342,6 +1610,16 @@ function registerIpc(): void {
     nativeTheme.themeSource = s.theme;
     return s.theme;
   });
+  // Idioma da interface — decide nomes de pastas NOVAS e a exibição; pastas
+  // já criadas no disco nunca são renomeadas.
+  // Sem escolha salva → appLanguage() detecta o idioma do SO (pt-* → pt, resto → en)
+  ipcMain.handle('settings:getLanguage', () => appLanguage());
+  ipcMain.handle('settings:setLanguage', (_e, l: 'pt' | 'en') => {
+    const s = loadSettings();
+    s.language = l === 'en' ? 'en' : 'pt';
+    saveSettings(s);
+    return s.language;
+  });
 
   // ---------- Assinaturas ----------
   ipcMain.handle('signatures:list', () => signatureStore.list());
@@ -1432,6 +1710,7 @@ function registerIpc(): void {
         syncIntervalMin: loadSettings().syncIntervalMin ?? 30,
         loadRemoteImages: loadSettings().loadRemoteImages ?? false,
         theme: loadSettings().theme ?? 'system',
+        language: appLanguage(),
       },
     };
     await writeFile(res.filePath, JSON.stringify(payload, null, 2));
@@ -1450,7 +1729,7 @@ function registerIpc(): void {
       accounts?: Array<AccountDraft & { id?: string; password?: string }>;
       rules?: MailRule[];
       signatures?: Signature[];
-      settings?: { syncIntervalMin?: number; loadRemoteImages?: boolean; theme?: 'system' | 'light' | 'dark' };
+      settings?: { syncIntervalMin?: number; loadRemoteImages?: boolean; theme?: 'system' | 'light' | 'dark'; language?: 'pt' | 'en' };
     };
     try {
       data = JSON.parse(readFileSync(res.filePaths[0], 'utf-8'));
@@ -1494,6 +1773,7 @@ function registerIpc(): void {
       if (data.settings.syncIntervalMin !== undefined) s.syncIntervalMin = data.settings.syncIntervalMin;
       if (data.settings.loadRemoteImages !== undefined) s.loadRemoteImages = data.settings.loadRemoteImages;
       if (data.settings.theme) s.theme = data.settings.theme;
+      if (data.settings.language) s.language = data.settings.language;
       saveSettings(s);
       if (data.settings.theme) nativeTheme.themeSource = data.settings.theme;
     }

@@ -7,6 +7,7 @@ import {
   mboxMessageToEml,
   scanThunderbirdMail,
 } from './thunderbirdImport';
+import { dedupContains, dedupNote } from './ruleEngine';
 import type { MigrateProgress } from './pstImport';
 import type { MailSource, TbMailFolder } from '../shared/types';
 import { safeFsName } from '../shared/fsName';
@@ -57,23 +58,34 @@ export async function importThunderbirdMail(
   onProgress({ phase: 'folders', currentFolder: '', done: 0, total });
 
   let done = 0;
+  let skipped = 0;
   await destSvc.batch(async () => {
     const walk = async (folders: TbMailFolder[], parentArc: string) => {
       for (const f of folders) {
         const clean = sanitizeFolderName(f.name);
         const arc = `${parentArc}/${clean}`;
         destSvc.createArchiveFolder(clean, `arc:${parentArc}`);
+        // Dedupe por Message-ID/hash — reimportar o mesmo perfil (ou uma
+        // base que já tem parte das mensagens) não cria duplicatas.
+        const destDir = destSvc.writableDirFor(`arc:${arc}`);
         try {
           for await (const raw of mboxMessages(f.mbox)) {
             try {
               const conv = mboxMessageToEml(raw);
-              if (conv) await destSvc.importItemEml(`arc:${arc}`, conv.eml, conv.read);
+              if (conv) {
+                if (destDir && (await dedupContains(destDir, conv.eml))) {
+                  skipped++;
+                } else {
+                  const name = await destSvc.importItemEml(`arc:${arc}`, conv.eml, conv.read);
+                  if (destDir) await dedupNote(destDir, name, conv.eml);
+                }
+              }
             } catch {
               // mensagem corrompida — pula sem interromper a importação
             }
             done++;
             if (done % 20 === 0 || done === total) {
-              onProgress({ phase: 'items', currentFolder: f.name, done, total });
+              onProgress({ phase: 'items', currentFolder: f.name, done, total, skipped });
             }
           }
         } catch {
@@ -89,6 +101,6 @@ export async function importThunderbirdMail(
     }
   });
 
-  onProgress({ phase: 'done', currentFolder: '', done, total });
+  onProgress({ phase: 'done', currentFolder: '', done, total, skipped });
   return destInfo;
 }

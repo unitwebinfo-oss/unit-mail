@@ -9,6 +9,8 @@ const P = {
   draft: 'M12 20h8a1 1 0 001-1 M17 3.5a2.1 2.1 0 013 3L8 18.5l-4.5 1 1-4.5z',
   trash: 'M4 6.5h16 M9 6.5V5a1.5 1.5 0 011.5-1.5h3A1.5 1.5 0 0115 5v1.5 M18.5 6.5l-.9 12.6a2 2 0 01-2 1.9H8.4a2 2 0 01-2-1.9L5.5 6.5 M10 11v6 M14 11v6',
   junk: 'M12 9v4.5 M12 17.5h.01 M10.3 3.9L1.8 18a2 2 0 001.7 3h17a2 2 0 001.7-3L13.7 3.9a2 2 0 00-3.4 0z',
+  // Quarentena de antivírus ("Itens infectados") — mesmo alerta, cor própria.
+  virus: 'M12 9v4.5 M12 17.5h.01 M10.3 3.9L1.8 18a2 2 0 001.7 3h17a2 2 0 001.7-3L13.7 3.9a2 2 0 00-3.4 0z',
   outbox: 'M21 12h-5l-1.6 2.4a1.5 1.5 0 01-1.2.6h-2.4a1.5 1.5 0 01-1.2-.6L8 12H3 M3 12l2.1-6.3A2 2 0 017 4.3h10a2 2 0 011.9 1.4L21 12 M3 12v6a2 2 0 002 2h14a2 2 0 002-2v-6',
   archive: 'M3 4.5A1.5 1.5 0 014.5 3h15A1.5 1.5 0 0121 4.5V7H3z M4.5 7v11.5A1.5 1.5 0 006 20h12a1.5 1.5 0 001.5-1.5V7 M9.5 11.5h5',
   folder: 'M3 6.5A2.5 2.5 0 015.5 4h3.4a2 2 0 011.6.8L12 7h7a2.5 2.5 0 012.5 2.5v7A2.5 2.5 0 0119 19H5.5A2.5 2.5 0 013 16.5z',
@@ -52,7 +54,16 @@ const P = {
   fileMail: 'M6.5 3h6.2L17 7.4V19a1.5 1.5 0 01-1.5 1.5h-9A1.5 1.5 0 015 19V4.5A1.5 1.5 0 016.5 3z M12.7 3v4.4H17 M8 10.5h6a1 1 0 011 1V15a1 1 0 01-1 1H8a1 1 0 01-1-1v-3.5a1 1 0 011-1z M8 11l3 2.3 3-2.3',
 };
 
-export function Icon({ name, size }: { name: keyof typeof P | string; size?: number }) {
+export function Icon({
+  name,
+  size,
+  color,
+}: {
+  name: keyof typeof P | string;
+  size?: number;
+  /** Cor do traço — sem ela o ícone herda a cor do texto (currentColor). */
+  color?: string;
+}) {
   const d = (P as Record<string, string>)[name] || P.folder;
   const parts = d.split(' M');
   return (
@@ -62,6 +73,7 @@ export function Icon({ name, size }: { name: keyof typeof P | string; size?: num
       height={size ?? 24}
       fill="none"
       stroke="currentColor"
+      style={color ? { color } : undefined}
       strokeWidth={1.5}
       strokeLinecap="round"
       strokeLinejoin="round"

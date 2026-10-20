@@ -3,7 +3,33 @@ import { Icon } from '../icons';
 import { folderIconKey, containerClassForModule } from '../utils';
 import { ITEM_DRAG_MIME } from './MessageList';
 import { isDefaultFolderId } from '../../../shared/types';
+import { folderKindOf, localizeFolderName } from '../../../shared/folderNames';
+import { t, useLang, getLang } from '../i18n';
 import type { FolderNode, MailSource, ModuleId } from '../../../shared/types';
+
+/** Cor por tipo de pasta/fonte — paleta estilo Outlook/Fluent. */
+const FC: Record<string, string> = {
+  inbox: '#0078d4',
+  sent: '#107c10',
+  draft: '#ca5010',
+  junk: '#ca5010',
+  virus: '#d13438',
+  trash: '#d13438',
+  outbox: '#038387',
+  archive: '#8764b8',
+  calendar: '#0078d4',
+  contact: '#e3008c',
+  task: '#8764b8',
+  note: '#eaa300',
+  journal: '#69797e',
+  folder: '#eaa300',
+  envelope: '#0078d4',
+  flag: '#e81123',
+  new: '#107c10',
+};
+const FI = ({ name, size }: { name: string; size?: number }) => (
+  <Icon name={name} size={size} color={FC[name]} />
+);
 
 export interface ItemDragPayload {
   sourceId: string;
@@ -217,9 +243,9 @@ function FolderItem({
           {hasChildren ? (expanded ? '−' : '+') : null}
         </span>
         <span className="f-icon">
-          <Icon name={icon} size={16} />
+          <FI name={icon} size={16} />
         </span>
-        <span className="f-name">{node.name}</span>
+        <span className="f-name">{localizeFolderName(node.name, getLang())}</span>
         {node.unreadCount > 0 && <span className="unread-badge">{node.unreadCount}</span>}
       </div>
       {expanded &&
@@ -285,6 +311,7 @@ export function FolderPane({
   favorites,
 }: FolderPaneProps) {
   const cc = containerClassForModule(module);
+  const lang = useLang();
   const [ctx, setCtx] = useState<CtxState | null>(null);
   const [ctxValue, setCtxValue] = useState('');
   /** Bases com "mostrar pastas ocultas" ligado — id da fonte. */
@@ -356,7 +383,10 @@ export function FolderPane({
     const flat = (nodes: FolderNode[], depth: number) => {
       for (const n of nodes) {
         if (n.id === ctx.node.id || n.id.startsWith(`${ctx.node.id}/`)) continue;
-        moveTargets.push({ id: n.id, label: `${'　'.repeat(depth)}${n.name}` });
+        moveTargets.push({
+          id: n.id,
+          label: `${'　'.repeat(depth)}${localizeFolderName(n.name, lang)}`,
+        });
         flat(n.children, depth + 1);
       }
     };
@@ -366,7 +396,7 @@ export function FolderPane({
   const menuStyle: React.CSSProperties = {
     position: 'fixed',
     left: Math.min(ctx?.x ?? 0, window.innerWidth - 240),
-    top: Math.min(ctx?.y ?? 0, window.innerHeight - 380),
+    top: Math.max(8, Math.min(ctx?.y ?? 0, window.innerHeight - 560)),
     zIndex: 120,
   };
 
@@ -384,14 +414,17 @@ export function FolderPane({
         onClick();
       }}
     >
-      <Icon name={icon} size={14} /> {label}
+      <FI name={icon} size={14} /> {label}
     </button>
   );
 
   const isLocal = ctx?.node.id.startsWith('arc:') ?? false;
   // Pastas padrão (Caixa de Entrada, Itens Excluídos, Calendário…) são
   // protegidas — excluir/renomear/mover quebraria fluxos internos do app.
-  const isProtected = ctx ? isDefaultFolderId(ctx.node.id) : false;
+  // "Itens infectados" (quarentena do antivírus) entra pela mesma regra.
+  const isProtected = ctx
+    ? isDefaultFolderId(ctx.node.id) || folderKindOf(ctx.node.name) === 'quarantine'
+    : false;
   const isFav = ctx ? favorites?.has(`${ctx.sourceId}|${ctx.node.id}`) : false;
 
   return (
@@ -401,9 +434,9 @@ export function FolderPane({
           <div style={{ marginBottom: 6 }}>
             <div className="folder-item fav-head">
               <span className="f-icon">
-                <Icon name="flag" size={16} />
+                <FI name="flag" size={16} />
               </span>
-              <span className="f-name">Favoritos</span>
+              <span className="f-name">{t('Favoritos')}</span>
             </div>
             {favNodes.map((f) => (
               <div
@@ -419,15 +452,15 @@ export function FolderPane({
               >
                 <span className="chevron" />
                 <span className="f-icon">
-                  <Icon name={folderIconKey(f.node.name, f.node.containerClass)} size={16} />
+                  <FI name={folderIconKey(f.node.name, f.node.containerClass)} size={16} />
                 </span>
-                <span className="f-name">{f.node.name}</span>
+                <span className="f-name">{localizeFolderName(f.node.name, lang)}</span>
                 {f.node.unreadCount > 0 && <span className="unread-badge">{f.node.unreadCount}</span>}
               </div>
             ))}
           </div>
         )}
-        {visibleEntries.length === 0 && <div className="empty-list">Nenhuma base aberta</div>}
+        {visibleEntries.length === 0 && <div className="empty-list">{t('Nenhuma base aberta')}</div>}
         {visibleEntries.map((e) => (
           <div
             key={e.source.id}
@@ -535,7 +568,7 @@ export function FolderPane({
                 {e.tree.length > 0 ? (isSrcOpen(e.source.id) ? '−' : '+') : null}
               </span>
               <span className="f-icon">
-                <Icon name={e.source.kind === 'imap' ? 'envelope' : 'archive'} size={16} />
+                <FI name={e.source.kind === 'imap' ? 'envelope' : 'archive'} size={16} />
               </span>
               <span className="f-name" title={e.source.label}>
                 {e.source.label}
@@ -590,7 +623,7 @@ export function FolderPane({
                     });
                   }}
                 >
-                  <Icon name="new" size={13} />
+                  <FI name="new" size={13} />
                 </span>
               )}
             </div>
@@ -625,50 +658,50 @@ export function FolderPane({
         >
           {ctx.mode === 'menu' && (
             <>
-              {item('Nova Pasta…', 'new', () => {
+              {item(t('Nova Pasta…'), 'new', () => {
                 // Campo vazio — "nova pasta" não deve pré-preencher o nome da pasta-pai
                 setCtxValue('');
                 setCtx({ ...ctx, mode: 'new' });
               })}
-              {item('Renomear Pasta', 'draft', () => setCtx({ ...ctx, mode: 'rename' }), !isLocal || isProtected)}
-              {item('Copiar Pasta', 'folder', () => onCopyFolder?.(ctx.sourceId, ctx.node.id), !isLocal)}
-              {item('Mover Pasta…', 'open', () => setCtx({ ...ctx, mode: 'move' }), !isLocal || isProtected)}
+              {item(t('Renomear Pasta'), 'draft', () => setCtx({ ...ctx, mode: 'rename' }), !isLocal || isProtected)}
+              {item(t('Copiar Pasta'), 'folder', () => onCopyFolder?.(ctx.sourceId, ctx.node.id), !isLocal)}
+              {item(t('Mover Pasta…'), 'open', () => setCtx({ ...ctx, mode: 'move' }), !isLocal || isProtected)}
               {/* A confirmação "Tem certeza?" é do próprio app (ConfirmDialog
                   no App) — window.confirm abriria um segundo diálogo nativo. */}
-              {item('Excluir Pasta', 'delete', () =>
+              {item(t('Excluir Pasta'), 'delete', () =>
                 onDeleteFolder?.(ctx.sourceId, ctx.node.id), !isLocal || isProtected)}
               {ctx.node.id !== '' &&
                 item(
-                  ctx.node.hidden ? 'Reexibir Pasta' : 'Ocultar Pasta',
+                  ctx.node.hidden ? t('Reexibir Pasta') : t('Ocultar Pasta'),
                   ctx.node.hidden ? 'eye' : 'eyeOff',
                   () =>
                     onSetFolderHidden?.(ctx.sourceId, ctx.node.id, !ctx.node.hidden),
                   !onSetFolderHidden,
                 )}
               <div className="ctx-sep" />
-              {item('Marcar Todas como Lidas', 'envelope', () =>
+              {item(t('Marcar Todas como Lidas'), 'envelope', () =>
                 onMarkAllRead?.(ctx.sourceId, ctx.node.id),
               )}
-              {item('Limpar Pasta', 'refresh', () =>
+              {item(t('Limpar Pasta'), 'refresh', () =>
                 onEmptyFolder?.(ctx.sourceId, ctx.node.id),
               )}
-              {item('Excluir Tudo', 'trash', () =>
+              {item(t('Excluir Tudo'), 'trash', () =>
                 onEmptyFolder?.(ctx.sourceId, ctx.node.id),
               )}
               <div className="ctx-sep" />
               {item(
-                isFav ? 'Remover dos Favoritos' : 'Adicionar a Favoritos',
+                isFav ? t('Remover dos Favoritos') : t('Adicionar a Favoritos'),
                 'flag',
                 () => onToggleFavorite?.(ctx.sourceId, ctx.node.id),
               )}
-              {item('Classificar Subpastas A a Z', 'chevronD', () =>
+              {item(t('Classificar Subpastas A a Z'), 'chevronD', () =>
                 onSortChildren?.(ctx.sourceId, ctx.node.id),
               )}
               <div className="ctx-sep" />
-              {item('Mover para cima', 'chevronR', () =>
+              {item(t('Mover para cima'), 'chevronR', () =>
                 onMoveFolderStep?.(ctx.sourceId, ctx.node.id, 'up'),
               )}
-              {item('Mover para Baixo', 'chevronD', () =>
+              {item(t('Mover para Baixo'), 'chevronD', () =>
                 onMoveFolderStep?.(ctx.sourceId, ctx.node.id, 'down'),
               )}
             </>
@@ -676,7 +709,7 @@ export function FolderPane({
 
           {(ctx.mode === 'new' || ctx.mode === 'rename') && (
             <div className="ctx-input">
-              <label>{ctx.mode === 'new' ? 'Nome da nova pasta' : 'Novo nome'}</label>
+              <label>{ctx.mode === 'new' ? t('Nome da nova pasta') : t('Novo nome')}</label>
               <input
                 autoFocus
                 value={ctxValue}
@@ -695,7 +728,7 @@ export function FolderPane({
                 }}
               />
               <div className="ctx-input-actions">
-                <button onClick={() => setCtx(null)}>Cancelar</button>
+                <button onClick={() => setCtx(null)}>{t('Cancelar')}</button>
                 <button
                   className="primary"
                   onClick={() => {
@@ -717,7 +750,9 @@ export function FolderPane({
 
           {ctx.mode === 'move' && (
             <div className="ctx-move">
-              <div className="ctx-move-title">Mover "{ctx.node.name}" para:</div>
+              <div className="ctx-move-title">
+                {t('Mover "{nome}" para:', { nome: localizeFolderName(ctx.node.name, lang) })}
+              </div>
               {moveTargets.map((t) => (
                 <button
                   key={t.id ?? '__root'}
@@ -730,7 +765,7 @@ export function FolderPane({
                 </button>
               ))}
               <div className="ctx-sep" />
-              <button onClick={() => setCtx(null)}>Cancelar</button>
+              <button onClick={() => setCtx(null)}>{t('Cancelar')}</button>
             </div>
           )}
         </div>

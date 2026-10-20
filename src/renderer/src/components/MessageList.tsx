@@ -2,6 +2,7 @@ import React from 'react';
 import { Icon } from '../icons';
 import { fmtSmartDate } from '../utils';
 import { normSearch } from '../../../shared/textNorm';
+import { t, useLang } from '../i18n';
 import type { ItemSummary, MailCategory } from '../../../shared/types';
 
 export interface GlobalSearchHit {
@@ -61,6 +62,9 @@ export interface MsgCtxPayload {
   isRead: boolean;
   /** Categorias do item clicado (para marcar os ✓ no submenu). */
   cats: string[];
+  /** E-mails dos remetentes dos itens selecionados (Bloquear Remetente) —
+   *  resolvidos aqui porque o App pode não ter os itens (ex.: busca global). */
+  senders: string[];
 }
 
 interface MsgCtx extends MsgCtxPayload {
@@ -276,6 +280,7 @@ export function MessageList({
   displayedRef,
   categories,
 }: MessageListProps) {
+  useLang();
   const searching = searchResults !== null;
   // Texto da pesquisa — escopo do filtro de não-lidos durante a busca
   const [query, setQuery] = React.useState('');
@@ -391,6 +396,17 @@ export function MessageList({
       onSelect(m, sourceId, folderId);
       indexes = [m.index];
     }
+    // Remetentes dos itens afetados — o clicado + os demais da multi-seleção
+    // (buscados na lista atual; o item clicado sempre entra).
+    const senders = new Set<string>();
+    const addSender = (it?: ItemSummary) => {
+      const em = it?.senderEmailAddress?.trim();
+      if (em) senders.add(em.toLowerCase());
+    };
+    addSender(m);
+    for (const ix of indexes) {
+      if (ix !== m.index) addSender(items.find((it) => it.index === ix));
+    }
     setMsgCtx({
       x: e.clientX,
       y: e.clientY,
@@ -400,6 +416,7 @@ export function MessageList({
       indexes,
       isRead: m.isRead,
       cats: m.categories ?? [],
+      senders: [...senders],
       mode: 'menu',
     });
   };
@@ -601,15 +618,15 @@ export function MessageList({
         <Icon name="search" size={14} />
         <input
           type="search"
-          placeholder="Pesquisar emails (assunto, remetente, destinatário, prévia)…"
+          placeholder={t('Pesquisar emails (assunto, remetente, destinatário, prévia)…')}
           onChange={(e) => {
             setQuery(e.target.value);
             onSearch(e.target.value);
           }}
         />
-        {searchBusy && <span className="scope busy">pesquisando…</span>}
+        {searchBusy && <span className="scope busy">{t('pesquisando…')}</span>}
         {searching && !searchBusy && (
-          <span className="scope">{visibleSearch!.length} resultado(s)</span>
+          <span className="scope">{visibleSearch!.length} {t('resultado(s)')}</span>
         )}
       </div>
       {/* Filtro Todas / Não lidos — como o Outlook 2016 (oculto em pastas de enviados) */}
@@ -621,13 +638,13 @@ export function MessageList({
                 className={!unreadOnly ? 'active' : ''}
                 onClick={() => setUnreadOnly(false)}
               >
-                Todas
+                {t('Todas')}
               </button>
               <button
                 className={unreadOnly ? 'active' : ''}
                 onClick={() => setUnreadOnly(true)}
               >
-                Não lidos{unreadCount > 0 ? ` ${unreadCount}` : ''}
+                {t('Não lidos')}{unreadCount > 0 ? ` ${unreadCount}` : ''}
               </button>
             </>
           )}
@@ -636,21 +653,21 @@ export function MessageList({
               className={`cat-filter${catFilter !== null ? ' active' : ''}`}
               value={catFilter ?? ''}
               onChange={(e) => setCatFilter(e.target.value || null)}
-              title="Filtrar por categoria"
+              title={t('Filtrar por categoria')}
             >
-              <option value="">Todas as categorias</option>
+              <option value="">{t('Todas as categorias')}</option>
               {categories!.map((c) => (
                 <option key={c.id} value={c.id}>
                   {c.name}
                 </option>
               ))}
-              <option value="none">Sem categoria</option>
+              <option value="none">{t('Sem categoria')}</option>
             </select>
           )}
           {catFilter !== null && (
             <button
               className="cat-clear"
-              title="Limpar filtro de categoria"
+              title={t('Limpar filtro de categoria')}
               onClick={() => setCatFilter(null)}
             >
               <Icon name="close" size={11} />
@@ -793,13 +810,13 @@ export function MessageList({
           </div>
         )}
         {!searching && !loading && items.length === 0 && (
-          <div className="empty-list">Nenhum item nesta pasta</div>
+          <div className="empty-list">{t('Nenhum item nesta pasta')}</div>
         )}
         {!searching && !loading && items.length > 0 && visible.length === 0 && (
-          <div className="empty-list">Nenhuma mensagem não lida</div>
+          <div className="empty-list">{t('Nenhuma mensagem não lida')}</div>
         )}
         {searching && visibleSearch!.length === 0 && (
-          <div className="empty-list">Nenhum resultado</div>
+          <div className="empty-list">{t('Nenhum resultado')}</div>
         )}
       </div>
       {/* Rodapé só aparece quando há algo útil a dizer — contagem de itens
@@ -809,8 +826,8 @@ export function MessageList({
         <div className="list-footer">
           <span>
             {searching
-              ? `${visibleSearch!.length} resultado(s)`
-              : `${selIndexes.size} selecionado(s)`}
+              ? `${visibleSearch!.length} ${t('resultado(s)')}`
+              : `${selIndexes.size} ${t('selecionado(s)')}`}
           </span>
         </div>
       )}
@@ -822,7 +839,7 @@ export function MessageList({
           style={{
             position: 'fixed',
             left: Math.min(msgCtx.x, window.innerWidth - 250),
-            top: Math.min(msgCtx.y, window.innerHeight - 420),
+            top: Math.max(8, Math.min(msgCtx.y, window.innerHeight - 560)),
             zIndex: 130,
           }}
           onClick={(e) => e.stopPropagation()}
@@ -845,7 +862,7 @@ export function MessageList({
                 disabled = false,
               ) => (
                 <button key={label} disabled={disabled} onClick={act(action)}>
-                  <Icon name={icon} size={14} /> {label}
+                  <Icon name={icon} size={14} /> {t(label)}
                 </button>
               );
               return (
@@ -864,6 +881,7 @@ export function MessageList({
                   <div className="ctx-sep" />
                   {it('Ignorar', 'close', 'ignore', true)}
                   {it('Lixo Eletrônico', 'junk', 'junk')}
+                  {it('Bloquear Remetente', 'close', 'blockSender')}
                   {it('Arquivar', 'archive', 'archive')}
                   {it('Excluir', 'delete', 'delete')}
                   <div className="ctx-sep" />
@@ -876,7 +894,12 @@ export function MessageList({
           {msgCtx.mode === 'move' && (
             <div className="ctx-move">
               <div className="ctx-move-title">
-                Mover {msgCtx.indexes.length > 1 ? `${msgCtx.indexes.length} itens` : 'item'} para:
+                {t('Mover {alvo} para:', {
+                  alvo:
+                    msgCtx.indexes.length > 1
+                      ? t('{n} itens', { n: msgCtx.indexes.length })
+                      : t('item'),
+                })}
               </div>
               {(moveTargets?.(msgCtx.sourceId) ?? [])
                 .filter((t) => t.id !== msgCtx.folderId)
@@ -892,7 +915,7 @@ export function MessageList({
                   </button>
                 ))}
               <div className="ctx-sep" />
-              <button onClick={() => setMsgCtx(null)}>Cancelar</button>
+              <button onClick={() => setMsgCtx(null)}>{t('Cancelar')}</button>
             </div>
           )}
 
@@ -901,7 +924,12 @@ export function MessageList({
           {msgCtx.mode === 'cats' && (
             <div className="ctx-move">
               <div className="ctx-move-title">
-                Categorizar {msgCtx.indexes.length > 1 ? `${msgCtx.indexes.length} itens` : 'item'}:
+                {t('Categorizar {alvo}:', {
+                  alvo:
+                    msgCtx.indexes.length > 1
+                      ? t('{n} itens', { n: msgCtx.indexes.length })
+                      : t('item'),
+                })}
               </div>
               {(categories ?? []).map((c) => {
                 const on = msgCtx.cats.includes(c.id);
@@ -927,7 +955,7 @@ export function MessageList({
                   onCtxAction?.('catClear', msgCtx);
                 }}
               >
-                Limpar Todas as Categorias
+                {t('Limpar Todas as Categorias')}
               </button>
               <button
                 onClick={() => {
@@ -935,7 +963,7 @@ export function MessageList({
                   onCtxAction?.('catsManage', msgCtx);
                 }}
               >
-                Todas as Categorias…
+                {t('Todas as Categorias…')}
               </button>
             </div>
           )}

@@ -1,5 +1,6 @@
 import React from 'react';
 import { Icon } from '../icons';
+import { t, useLang } from '../i18n';
 import type { ModuleId } from '../../../shared/types';
 
 interface ModuleBarProps {
@@ -22,6 +23,7 @@ const MODULES: Array<{ id: ModuleId; label: string; icon: string }> = [
 ];
 
 export function ModuleBar({ module, onChange, syncStatus }: ModuleBarProps) {
+  useLang();
   return (
     <div className="module-bar">
       {MODULES.map((m) => (
@@ -31,17 +33,17 @@ export function ModuleBar({ module, onChange, syncStatus }: ModuleBarProps) {
           onClick={() => onChange(m.id)}
         >
           <Icon name={m.icon} />
-          {m.label}
+          {t(m.label)}
         </button>
       ))}
       {syncStatus && (
         <button
           className={`sync-status ${syncStatus.active ? 'running' : ''}`}
           onClick={syncStatus.onClick}
-          title="Ver progresso de envio/recebimento"
+          title={t('Ver progresso de envio/recebimento')}
         >
           <Icon name="sendReceive" size={13} />
-          <span>Enviar/receber</span>
+          <span>{t('Enviar/receber')}</span>
           <span className="sync-mini-bar">
             <span
               className="sync-mini-fill"

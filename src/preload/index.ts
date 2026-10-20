@@ -4,6 +4,7 @@ import type {
   AccountDraft,
   AccountTestResult,
   AttachmentData,
+  ComposeDraftPayload,
   ComposeInput,
   FolderNode,
   ImportedAccountGuess,
@@ -49,6 +50,14 @@ export interface OutlookApi {
   sendMail(input: ComposeInput): Promise<boolean>;
   pickAttachments(): Promise<string[]>;
   pickImage(): Promise<string | null>;
+  /** Abre o rascunho numa janela de composição separada (como no Outlook). */
+  openComposeWindow(draft: ComposeDraftPayload): Promise<void>;
+  /** Rascunho pendente de uma janela de composição — chamado por ela ao carregar. */
+  composeGetDraft(id: string): Promise<ComposeDraftPayload | null>;
+  /** Avisa a janela principal que um rascunho de janela separada foi enviado. */
+  composeNotifySent(): Promise<void>;
+  /** Dispara quando um envio feito em janela separada termina (atualizar listas). */
+  onComposeSent(cb: () => void): () => void;
   signatureFor(accountId: string, kind?: 'new' | 'reply' | 'forward'): Promise<string>;
   renameLocalStore(path: string, newName: string): Promise<unknown>;
   createLocalStoreAuto(name: string): Promise<MailSource | null>;
@@ -60,7 +69,14 @@ export interface OutlookApi {
    *  existingStorePath: importa dentro de uma base existente em vez de criar nova. */
   migratePst(sourceId: string, destParentDir: string, name: string, existingStorePath?: string): Promise<MailSource>;
   onMigrateProgress(
-    cb: (p: { phase: 'folders' | 'items' | 'done'; currentFolder: string; done: number; total: number }) => void,
+    cb: (p: {
+      phase: 'folders' | 'items' | 'done';
+      currentFolder: string;
+      done: number;
+      total: number;
+      /** Mensagens puladas por já existirem no destino (dedupe). */
+      skipped?: number;
+    }) => void,
   ): () => void;
   getLoadImages(): Promise<boolean>;
   setLoadImages(v: boolean): Promise<boolean>;
@@ -83,10 +99,19 @@ export interface OutlookApi {
     /** false = senhas sem criptografia do SO (keyring indisponível) */
     secureStorage: boolean;
   }>;
+  /** Avisa ao main que o renderer pintou — libera a janela para exibição. */
+  appReady(): void;
   /** Abre a pasta de dados do app no explorador de arquivos. */
   openDataDir(): Promise<string>;
   /** Abre uma URL http(s) no navegador padrão do sistema. */
   openExternal(url: string): Promise<void>;
+  /** Consulta a última release no GitHub — null quando offline/indisponível. */
+  checkUpdate(): Promise<{
+    current: string;
+    latest: string;
+    url: string;
+    newer: boolean;
+  } | null>;
   /** Pasta raiz de dados (perfil portátil — contas, regras, bases Mail/). */
   getDataDir(): Promise<string>;
   /** Abre o seletor de pasta de dados — não grava nada (isProfile = já é perfil). */
@@ -104,6 +129,9 @@ export interface OutlookApi {
   /** Tema da interface — 'system' segue o SO. */
   getTheme(): Promise<'system' | 'light' | 'dark'>;
   setTheme(t: 'system' | 'light' | 'dark'): Promise<string>;
+  /** Idioma da interface — 'pt' ou 'en' (pastas novas seguem o idioma). */
+  getLanguage(): Promise<'pt' | 'en'>;
+  setLanguage(l: 'pt' | 'en'): Promise<string>;
   getSetupComplete(): Promise<boolean>;
   setSetupComplete(v: boolean): Promise<boolean>;
   moveItem(
@@ -144,6 +172,12 @@ export interface OutlookApi {
   copyFolder(sourceId: string, folderId: string): Promise<FolderNode[]>;
   emptyFolder(sourceId: string, folderId: string): Promise<number>;
   markAllRead(sourceId: string, folderId: string): Promise<boolean>;
+  /** Lista de remetentes bloqueados (cai direto no Lixo eletrônico). */
+  blockedList(): Promise<string[]>;
+  /** Adiciona endereço ou domínio à lista — retorna a lista atualizada. */
+  blockedAdd(entry: string): Promise<string[]>;
+  /** Remove um endereço/domínio da lista — retorna a lista atualizada. */
+  blockedRemove(entry: string): Promise<string[]>;
   getFolderOrders(): Promise<Record<string, string[]>>;
   setFolderOrder(key: string, orderedIds: string[]): Promise<boolean>;
   /** Responde convite de reunião (Aceitar/Recusar/Propor novo horário). */
@@ -186,7 +220,15 @@ export interface OutlookApi {
   upsertRule(rule: Omit<MailRule, 'id'> & { id?: string }): Promise<MailRule>;
   removeRule(id: string): Promise<boolean>;
   /** "Executar Regras Agora" — aplica regras habilitadas aos itens da pasta. */
-  applyRulesToFolder(sourceId: string, folderId: string, ruleIds?: string[]): Promise<{ applied: number }>;
+  applyRulesToFolder(
+    sourceId: string,
+    folderId: string,
+    ruleIds?: string[],
+  ): Promise<{ applied: number; done?: number; cancelled?: boolean; targetMissing?: number }>;
+  /** Progresso da execução de regras numa pasta. */
+  onRulesProgress?(cb: (p: { done: number; total: number; applied: number }) => void): () => void;
+  /** Interrompe a execução de regras em andamento. */
+  cancelApplyRules?(): void;
 
   // Importação do Outlook (Windows)
   isOutlookImportAvailable(): Promise<boolean>;
@@ -277,6 +319,14 @@ const api: OutlookApi = {
   sendMail: (input) => ipcRenderer.invoke('accounts:send', input),
   pickAttachments: () => ipcRenderer.invoke('dialog:pickAttachments'),
   pickImage: () => ipcRenderer.invoke('dialog:pickImage'),
+  openComposeWindow: (draft) => ipcRenderer.invoke('compose:openWindow', draft),
+  composeGetDraft: (id) => ipcRenderer.invoke('compose:getDraft', id),
+  composeNotifySent: () => ipcRenderer.invoke('compose:notifySent'),
+  onComposeSent: (cb) => {
+    const listener = () => cb();
+    ipcRenderer.on('compose:sent', listener);
+    return () => ipcRenderer.removeListener('compose:sent', listener);
+  },
   signatureFor: (accountId, kind) => ipcRenderer.invoke('accounts:signatureFor', accountId, kind),
   renameLocalStore: (path, newName) => ipcRenderer.invoke('stores:renameLocal', path, newName),
   createLocalStoreAuto: (name) => ipcRenderer.invoke('stores:createLocalAuto', name),
@@ -288,7 +338,13 @@ const api: OutlookApi = {
   onMigrateProgress: (cb) => {
     const listener = (
       _e: unknown,
-      p: { phase: 'folders' | 'items' | 'done'; currentFolder: string; done: number; total: number },
+      p: {
+        phase: 'folders' | 'items' | 'done';
+        currentFolder: string;
+        done: number;
+        total: number;
+        skipped?: number;
+      },
     ) => cb(p);
     ipcRenderer.on('migrate:progress', listener);
     return () => ipcRenderer.removeListener('migrate:progress', listener);
@@ -302,6 +358,8 @@ const api: OutlookApi = {
   setDefaultStore: (p) => ipcRenderer.invoke('settings:setDefaultStore', p),
   getTheme: () => ipcRenderer.invoke('settings:getTheme'),
   setTheme: (t) => ipcRenderer.invoke('settings:setTheme', t),
+  getLanguage: () => ipcRenderer.invoke('settings:getLanguage'),
+  setLanguage: (l) => ipcRenderer.invoke('settings:setLanguage', l),
   getSetupComplete: () => ipcRenderer.invoke('settings:getSetupComplete'),
   setSetupComplete: (v) => ipcRenderer.invoke('settings:setSetupComplete', v),
   moveItem: (srcId, srcFolderId, index, dstId, dstFolderId) =>
@@ -337,6 +395,9 @@ const api: OutlookApi = {
   emptyFolder: (sourceId, folderId) => ipcRenderer.invoke('folders:empty', sourceId, folderId),
   markAllRead: (sourceId, folderId) =>
     ipcRenderer.invoke('folders:markAllRead', sourceId, folderId),
+  blockedList: () => ipcRenderer.invoke('blocked:list'),
+  blockedAdd: (entry) => ipcRenderer.invoke('blocked:add', entry),
+  blockedRemove: (entry) => ipcRenderer.invoke('blocked:remove', entry),
   getFolderOrders: () => ipcRenderer.invoke('settings:getFolderOrders'),
   setFolderOrder: (key, orderedIds) =>
     ipcRenderer.invoke('settings:setFolderOrder', key, orderedIds),
@@ -385,6 +446,15 @@ const api: OutlookApi = {
   removeRule: (id) => ipcRenderer.invoke('rules:remove', id),
   applyRulesToFolder: (sourceId, folderId, ruleIds) =>
     ipcRenderer.invoke('rules:applyToFolder', sourceId, folderId, ruleIds),
+  onRulesProgress: (cb) => {
+    const listener = (
+      _e: unknown,
+      p: { done: number; total: number; applied: number },
+    ) => cb(p);
+    ipcRenderer.on('rules:progress', listener);
+    return () => ipcRenderer.removeListener('rules:progress', listener);
+  },
+  cancelApplyRules: () => ipcRenderer.send('rules:cancelApply'),
 
   isOutlookImportAvailable: () => ipcRenderer.invoke('outlookImport:available'),
   scanOutlookAccounts: () => ipcRenderer.invoke('outlookImport:scan'),
@@ -397,8 +467,12 @@ const api: OutlookApi = {
   exportBackup: () => ipcRenderer.invoke('backup:export'),
   importBackup: () => ipcRenderer.invoke('backup:import'),
   getAppInfo: () => ipcRenderer.invoke('app:info'),
+  /** Sinaliza o primeiro paint real do renderer — a janela só é exibida
+   *  depois disso (splash → app já pintado, sem flash em branco). */
+  appReady: () => ipcRenderer.send('app:firstPaint'),
   openDataDir: () => ipcRenderer.invoke('app:openDataDir'),
   openExternal: (url) => ipcRenderer.invoke('app:openExternal', url),
+  checkUpdate: () => ipcRenderer.invoke('app:checkUpdate'),
   getDataDir: () => ipcRenderer.invoke('app:getDataDir'),
   pickDataDirPath: () => ipcRenderer.invoke('app:pickDataDirPath'),
   applyDataDir: (dir) => ipcRenderer.invoke('app:applyDataDir', dir),
