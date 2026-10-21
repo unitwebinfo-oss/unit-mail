@@ -225,6 +225,8 @@ const EN: Record<string, string> = {
   'Sincronização': 'Synchronization',
   'Segurança': 'Security',
   'Remetentes bloqueados': 'Blocked senders',
+  'Servidor IMAP': 'IMAP server',
+  'IMAP mantém as mensagens no servidor. Nenhum arquivo local será criado ou vinculado automaticamente.': 'IMAP keeps messages on the server. No local data file will be created or linked automatically.',
   'Localizar na lista…': 'Search the list…',
   'Aceitar certificado autoassinado (servidor próprio/hospedagem)': 'Accept self-signed certificate (own server/hosting)',
   'Nenhum bloqueado encontrado para esta busca.': 'No blocked sender matches this search.',
@@ -731,6 +733,10 @@ const EN: Record<string, string> = {
   'Remover conta': 'Remove account',
   'Remover a conta "{email}"? A base de dados vinculada "{label}" também será excluída — todas as mensagens nela serão apagadas do disco.':
     'Remove account "{email}"? The bound data store "{label}" will also be deleted — all messages in it will be erased from disk.',
+  'Remover a conta "{email}"? A base de dados "{label}" está vinculada só a ela.':
+    'Remove account "{email}"? The data store "{label}" is bound only to it.',
+  'Apagar também "{label}" — todas as mensagens nela serão excluídas do disco.':
+    'Also delete "{label}" — all messages in it will be erased from disk.',
   'Remover a conta "{email}"?{pst}': 'Remove account "{email}"?{pst}',
   'A base de dados vinculada (PST) não é apagada.': 'The bound data file (PST) is not deleted.',
   'Re-sincronizar do servidor': 'Re-sync from server',

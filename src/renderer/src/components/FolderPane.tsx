@@ -3,7 +3,7 @@ import { Icon } from '../icons';
 import { folderIconKey, containerClassForModule } from '../utils';
 import { ITEM_DRAG_MIME } from './MessageList';
 import { isDefaultFolderId } from '../../../shared/types';
-import { folderKindOf, localizeFolderName } from '../../../shared/folderNames';
+import { folderKindOf, localizeFolderName, mailFilterTree } from '../../../shared/folderNames';
 import { t, useLang, getLang } from '../i18n';
 import type { FolderNode, MailSource, ModuleId } from '../../../shared/types';
 
@@ -280,25 +280,6 @@ function filterTree(nodes: FolderNode[], cc: string): FolderNode[] {
   return out;
 }
 
-/**
- * Módulo Email: esconde as pastas de Calendário/Contatos/Tarefas — no Outlook
- * elas só aparecem nos módulos próprios, nunca na lista de pastas de email.
- */
-const NON_MAIL_CC = new Set(['IPF.Appointment', 'IPF.Contact', 'IPF.Task']);
-const NON_MAIL_KINDS = new Set(['calendar', 'contacts', 'tasks']);
-function mailFilterTree(nodes: FolderNode[]): FolderNode[] {
-  const out: FolderNode[] = [];
-  for (const n of nodes) {
-    const kind =
-      folderKindOf(n.archiveName || '') ||
-      folderKindOf(n.id.startsWith('arc:') ? n.id.slice(4).split('/').pop() || '' : '') ||
-      folderKindOf(n.name);
-    if (NON_MAIL_CC.has(n.containerClass) || (kind && NON_MAIL_KINDS.has(kind))) continue;
-    out.push({ ...n, children: mailFilterTree(n.children) });
-  }
-  return out;
-}
-
 function findNode(nodes: FolderNode[], id: string): FolderNode | null {
   for (const n of nodes) {
     if (n.id === id) return n;
@@ -438,11 +419,17 @@ export function FolderPane({
   );
 
   const isLocal = ctx?.node.id.startsWith('arc:') ?? false;
+  // Fonte da pasta clicada — pasta IMAP também pode renomear/excluir (no servidor).
+  const ctxSource = ctx ? entries.find((e) => e.source.id === ctx.sourceId)?.source : undefined;
+  const isImap = ctxSource?.kind === 'imap';
   // Pastas padrão (Caixa de Entrada, Itens Excluídos, Calendário…) são
   // protegidas — excluir/renomear/mover quebraria fluxos internos do app.
   // "Itens infectados" (quarentena do antivírus) entra pela mesma regra.
+  // IMAP: INBOX e pastas especiais do servidor (\Sent, \Trash…) idem.
   const isProtected = ctx
-    ? isDefaultFolderId(ctx.node.id) || folderKindOf(ctx.node.name) === 'quarantine'
+    ? isDefaultFolderId(ctx.node.id) ||
+      folderKindOf(ctx.node.name) === 'quarantine' ||
+      (isImap && (ctx.node.id.toUpperCase() === 'INBOX' || !!ctx.node.specialUse))
     : false;
   const isFav = ctx ? favorites?.has(`${ctx.sourceId}|${ctx.node.id}`) : false;
 
@@ -618,7 +605,7 @@ export function FolderPane({
                   <Icon name={showHidden.has(e.source.id) ? 'eyeOff' : 'eye'} size={13} />
                 </span>
               )}
-              {e.source.kind !== 'imap' && onCreateFolder && (
+              {onCreateFolder && (
                 <span
                   style={{ cursor: 'pointer', color: 'var(--text-dim)', marginLeft: 8 }}
                   title="Nova pasta nesta base"
@@ -682,20 +669,20 @@ export function FolderPane({
                 setCtxValue('');
                 setCtx({ ...ctx, mode: 'new' });
               })}
-              {item(t('Renomear Pasta'), 'draft', () => setCtx({ ...ctx, mode: 'rename' }), !isLocal || isProtected)}
+              {item(t('Renomear Pasta'), 'draft', () => setCtx({ ...ctx, mode: 'rename' }), (!isLocal && !isImap) || isProtected)}
               {item(t('Copiar Pasta'), 'folder', () => onCopyFolder?.(ctx.sourceId, ctx.node.id), !isLocal)}
               {item(t('Mover Pasta…'), 'open', () => setCtx({ ...ctx, mode: 'move' }), !isLocal || isProtected)}
               {/* A confirmação "Tem certeza?" é do próprio app (ConfirmDialog
                   no App) — window.confirm abriria um segundo diálogo nativo. */}
               {item(t('Excluir Pasta'), 'delete', () =>
-                onDeleteFolder?.(ctx.sourceId, ctx.node.id), !isLocal || isProtected)}
+                onDeleteFolder?.(ctx.sourceId, ctx.node.id), (!isLocal && !isImap) || isProtected)}
               {ctx.node.id !== '' &&
                 item(
                   ctx.node.hidden ? t('Reexibir Pasta') : t('Ocultar Pasta'),
                   ctx.node.hidden ? 'eye' : 'eyeOff',
                   () =>
                     onSetFolderHidden?.(ctx.sourceId, ctx.node.id, !ctx.node.hidden),
-                  !onSetFolderHidden,
+                  !onSetFolderHidden || isImap,
                 )}
               <div className="ctx-sep" />
               {item(t('Marcar Todas como Lidas'), 'envelope', () =>
@@ -703,9 +690,11 @@ export function FolderPane({
               )}
               {item(t('Limpar Pasta'), 'refresh', () =>
                 onEmptyFolder?.(ctx.sourceId, ctx.node.id),
+                isImap,
               )}
               {item(t('Excluir Tudo'), 'trash', () =>
                 onEmptyFolder?.(ctx.sourceId, ctx.node.id),
+                isImap,
               )}
               <div className="ctx-sep" />
               {item(

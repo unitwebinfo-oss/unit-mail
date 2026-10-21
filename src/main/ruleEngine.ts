@@ -516,6 +516,9 @@ export function foreignPath(p: string): boolean {
  * Retorna o diretório físico onde gravar a pasta.
  */
 export function ensureDeliveryStore(account: AccountConfig): string {
+  // IMAP já é o armazenamento da conta. Não crie nem escolha uma base local
+  // silenciosamente para ela; a mensagem permanece no servidor IMAP.
+  if (account.protocol === 'imap') return '';
   // deliveryPath só vale se a pasta existe NESTA máquina — um backup
   // restaurado de outro SO traz caminho inválido ("D:\…" no Linux), e
   // gravar nele criava um diretório fantasma fora da base ('\' é nome
@@ -523,9 +526,10 @@ export function ensureDeliveryStore(account: AccountConfig): string {
   // clara em vez de sumir num caminho errado.
   if (account.deliveryPath && existsSync(account.deliveryPath) && !foreignPath(account.deliveryPath))
     return account.deliveryPath;
-  // Sem base vinculada à conta → usa o arquivo de dados marcado como principal
+  // Sem base vinculada à conta → usa o arquivo de dados marcado como principal.
+  // PST nunca é destino de entrega: é somente leitura — serve só para importar.
   const principal = defaultStorePath();
-  if (principal) {
+  if (principal && !principal.toLowerCase().endsWith('.pst')) {
     try {
       // Abre o tipo certo — openLocalStore num .pst registraria o arquivo como
       // base local e a entrega depois tentaria criar pastas DENTRO do arquivo
@@ -687,10 +691,32 @@ export class RuleEngine {
     const userRules = all.filter((r) => !r.name.startsWith(DELIVERY_RULE_PREFIX));
     const deliveryRules = all.filter((r) => r.name.startsWith(DELIVERY_RULE_PREFIX));
     const virusScan = virusScanEnabled();
-    const hasDeliveryTarget = deliveryRules.length > 0 || !!account?.deliveryPath || !!defaultStorePath();
-    // IMAP sem nenhum destino/regra: nada a fazer (fica só no servidor).
-    // POP3 sempre baixa (entrega padrão cria base se necessário).
+    // IMAP: só vinculação EXPLÍCITA conta como destino — a base principal do
+    // app NUNCA recebe cópia de mensagens IMAP (elas moram no servidor).
+    const hasDeliveryTarget = deliveryRules.length > 0 || !!account?.deliveryPath;
+    // IMAP sem nenhum destino/regra: não entrega nada, mas ainda DETECTA o
+    // que chegou novo no servidor (envelopes apenas — nenhum corpo baixado).
+    // É o que faz o badge de não-lidos e a notificação funcionarem como num
+    // cliente normal. POP3 sempre baixa (entrega padrão cria base se preciso).
     if (userRules.length === 0 && !hasDeliveryTarget && account?.protocol !== 'pop3') {
+      if (account?.protocol === 'imap') {
+        const st = loadImapState();
+        st[accountId] = st[accountId] || {};
+        const lastUid = st[accountId]['INBOX'] || 0;
+        const fresh = await imap.fetchNewEnvelopes('INBOX', lastUid).catch(() => []);
+        let maxUid = lastUid;
+        for (const e of fresh) if (e.uid > maxUid) maxUid = e.uid;
+        st[accountId]['INBOX'] = maxUid;
+        saveImapState(st);
+        result.scanned = fresh.length;
+        result.newOnServer = fresh.length;
+        this.emit({
+          taskId: recvTask, label: `${email} - Recebendo`, accountId, phase: 'recv',
+          status: 'done', total: fresh.length, done: fresh.length,
+        });
+        this.currentTask = null;
+        return result;
+      }
       this.emit({ taskId: recvTask, label: `${email} - Recebendo`, accountId, phase: 'recv', status: 'done', total: 0, done: 0 });
       this.currentTask = null;
       return result;
@@ -1202,19 +1228,9 @@ export class RuleEngine {
     let done = 0;
     this.emit({ taskId: recvTask, label: `${email} - Recebendo`, accountId, phase: 'recv', status: 'processing', total: envelopes.length, done });
 
-    const imapInboxDir = () => {
-      // deliveryPath inválido nesta máquina (backup de outro SO) → principal
-      const dp =
-        account?.deliveryPath && existsSync(account.deliveryPath) && !foreignPath(account.deliveryPath)
-          ? account.deliveryPath
-          : '';
-      const storePath = dp || defaultStorePath();
-      return storePath
-        ? account?.deliveryFolder
-          ? folderDirFor(storePath, account.deliveryFolder)
-          : kindDirFor(storePath, 'inbox')
-        : null;
-    };
+    // IMAP nunca tem destino padrão em disco — a mensagem mora no servidor.
+    // Regras do usuário continuam podendo copiar para a base que ele escolher.
+    const imapInboxDir = () => null;
 
     // Mensagens cujo download/entrega falhou na sincronização anterior —
     // maxUid já passou por elas, então são tentadas de novo aqui.
@@ -1246,10 +1262,9 @@ export class RuleEngine {
         env,
         env.uid,
         imapInboxDir,
-        // Conta vinculada a uma base → a entrega é obrigatória: sem destino
-        // válido a mensagem fica pendurada para a próxima sync em vez de
-        // sumir marcada como processada.
-        !!account?.deliveryPath,
+        // IMAP nunca exige destino local — sem regra casada a mensagem fica
+        // no servidor e é dada como processada (não fica pendurada).
+        false,
       );
       if (!ok) stillPending.push({ uid: env.uid, from: env.from, to: env.to, subject: env.subject });
       done++;

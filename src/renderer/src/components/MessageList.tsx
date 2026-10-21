@@ -1,9 +1,10 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { Icon } from '../icons';
-import { fmtSmartDate } from '../utils';
+import { fmtSmartDate, folderIconKey } from '../utils';
 import { normSearch } from '../../../shared/textNorm';
-import { t, useLang } from '../i18n';
-import type { ItemSummary, MailCategory } from '../../../shared/types';
+import { t, useLang, getLang } from '../i18n';
+import { localizeFolderName, mailFilterTree } from '../../../shared/folderNames';
+import type { FolderNode, ItemSummary, MailCategory, MailSource } from '../../../shared/types';
 
 export interface GlobalSearchHit {
   sourceId: string;
@@ -32,8 +33,12 @@ interface MessageListProps {
   onSelChange: (indexes: number[], primary: number) => void;
   /** Tecla Delete sobre a lista → exclui os selecionados. */
   onDeleteKey?: () => void;
-  /** Pastas de destino do submenu "Mover" para a base do item clicado. */
-  moveTargets?: (sourceId: string) => Array<{ id: string; label: string }>;
+  /** Bases + árvores de pastas para o seletor "Mover" — mesma hierarquia
+   *  do painel de pastas (bases locais, PSTs e contas IMAP). */
+  moveEntries?: Array<{ source: MailSource; tree: FolderNode[] }>;
+  /** Disparado ao abrir o seletor — o App reconsulta as árvores para que
+   *  pastas criadas direto no servidor apareçam sem reiniciar o app. */
+  onMoveMenuOpen?: () => void;
   /** Ação do menu de contexto da mensagem (botão direito). */
   onCtxAction?: (action: string, ctx: MsgCtxPayload) => void;
   onLoadMore: () => void;
@@ -260,6 +265,105 @@ function loadCols(): ColWidths {
   }
 }
 
+/** Linha de pasta dentro do seletor "Mover" — mesmo visual do painel de
+ *  pastas (chevron, ícone colorido por tipo, recuo por nível). */
+function MoveFolderRow({
+  node,
+  depth,
+  sourceId,
+  cur,
+  onPick,
+}: {
+  node: FolderNode;
+  depth: number;
+  sourceId: string;
+  cur: { sourceId: string; folderId: string };
+  onPick: (folderId: string) => void;
+}) {
+  const [open, setOpen] = useState(true);
+  // A pasta de origem sai do seletor (mover para si mesma não faz sentido);
+  // as subpastas dela continuam disponíveis.
+  const isCurrent = cur.sourceId === sourceId && cur.folderId === node.id;
+  const kids = node.children.filter((c) => !c.hidden);
+  return (
+    <>
+      {!isCurrent && (
+        <div
+          className="folder-item mv-row"
+          style={{ paddingLeft: 8 + depth * 14 }}
+          title={node.name}
+          onClick={() => onPick(node.id)}
+        >
+          <span
+            className="chevron"
+            onClick={(e) => {
+              e.stopPropagation();
+              setOpen(!open);
+            }}
+          >
+            {kids.length > 0 ? (open ? '−' : '+') : null}
+          </span>
+          <span className="f-icon">
+            <Icon name={folderIconKey(node.name, node.containerClass)} size={14} />
+          </span>
+          <span className="f-name">{localizeFolderName(node.name, getLang())}</span>
+        </div>
+      )}
+      {open &&
+        kids.map((c) => (
+          <MoveFolderRow
+            key={c.id}
+            node={c}
+            depth={isCurrent ? depth : depth + 1}
+            sourceId={sourceId}
+            cur={cur}
+            onPick={onPick}
+          />
+        ))}
+    </>
+  );
+}
+
+/** Grupo de uma base (local/PST/conta IMAP) no seletor "Mover". */
+function MoveSourceGroup({
+  entry,
+  cur,
+  onPick,
+}: {
+  entry: { source: MailSource; tree: FolderNode[] };
+  cur: { sourceId: string; folderId: string };
+  onPick: (sourceId: string, folderId: string) => void;
+}) {
+  const [open, setOpen] = useState(true);
+  const tree = mailFilterTree(entry.tree).filter((n) => !n.hidden);
+  return (
+    <div className="mv-src">
+      <div
+        className="folder-item mv-src-head"
+        onClick={() => setOpen(!open)}
+        title={entry.source.label}
+      >
+        <span className="chevron">{tree.length > 0 ? (open ? '−' : '+') : null}</span>
+        <span className="f-icon">
+          <Icon name={entry.source.kind === 'imap' ? 'envelope' : 'archive'} size={14} />
+        </span>
+        <span className="f-name">{entry.source.label}</span>
+      </div>
+      {open &&
+        tree.map((n) => (
+          <MoveFolderRow
+            key={n.id}
+            node={n}
+            depth={1}
+            sourceId={entry.source.id}
+            cur={cur}
+            onPick={(fid) => onPick(entry.source.id, fid)}
+          />
+        ))}
+    </div>
+  );
+}
+
 export function MessageList({
   items,
   selectedIndex,
@@ -272,7 +376,8 @@ export function MessageList({
   onOpenItem,
   onSelChange,
   onDeleteKey,
-  moveTargets,
+  moveEntries,
+  onMoveMenuOpen,
   onCtxAction,
   onLoadMore,
   hasMore,
@@ -308,6 +413,25 @@ export function MessageList({
   // Filtro por categoria — id da categoria, 'none' = sem categoria, null = todas
   const [catFilter, setCatFilter] = React.useState<string | null>(null);
   const paneRef = React.useRef<HTMLDivElement | null>(null);
+  const ctxMenuRef = React.useRef<HTMLDivElement | null>(null);
+
+  // Mantém o menu de contexto inteiro dentro da janela — se abrir perto da
+  // borda inferior/direita, reposiciona depois de medir a altura real.
+  React.useLayoutEffect(() => {
+    const el = ctxMenuRef.current;
+    if (!msgCtx || !el) return;
+    const r = el.getBoundingClientRect();
+    const left = Math.min(
+      Math.max(8, msgCtx.x),
+      Math.max(8, window.innerWidth - r.width - 8),
+    );
+    const top = Math.min(
+      Math.max(8, msgCtx.y),
+      Math.max(8, window.innerHeight - r.height - 8),
+    );
+    el.style.left = `${left}px`;
+    el.style.top = `${top}px`;
+  }, [msgCtx]);
 
   // ===== Virtualização da lista (como Outlook/Thunderbird) =====
   // Pastas grandes têm dezenas de milhares de itens — renderizar tudo no DOM
@@ -840,6 +964,7 @@ export function MessageList({
       {/* Menu de contexto da mensagem (botão direito) — estilo Outlook */}
       {msgCtx && (
         <div
+          ref={ctxMenuRef}
           className="ctx-menu"
           style={{
             position: 'fixed',
@@ -854,6 +979,7 @@ export function MessageList({
             (() => {
               const act = (action: string) => () => {
                 if (action === '__move__' || action === '__cats__') {
+                  if (action === '__move__') onMoveMenuOpen?.();
                   setMsgCtx({ ...msgCtx, mode: action === '__move__' ? 'move' : 'cats' });
                   return;
                 }
@@ -906,19 +1032,22 @@ export function MessageList({
                       : t('item'),
                 })}
               </div>
-              {(moveTargets?.(msgCtx.sourceId) ?? [])
-                .filter((t) => t.id !== msgCtx.folderId)
-                .map((t) => (
-                  <button
-                    key={t.id}
-                    onClick={() => {
+              <div className="ctx-move-tree">
+                {(moveEntries ?? []).map((e) => (
+                  <MoveSourceGroup
+                    key={e.source.id}
+                    entry={e}
+                    cur={{ sourceId: msgCtx.sourceId, folderId: msgCtx.folderId }}
+                    onPick={(sid, fid) => {
                       setMsgCtx(null);
-                      onCtxAction?.(`move:${t.id}`, msgCtx);
+                      onCtxAction?.(`move:${sid}\u0000${fid}`, msgCtx);
                     }}
-                  >
-                    {t.label}
-                  </button>
+                  />
                 ))}
+                {(moveEntries ?? []).every((e) => mailFilterTree(e.tree).length === 0) && (
+                  <div className="ctx-move-empty">{t('Nenhuma pasta de destino')}</div>
+                )}
+              </div>
               <div className="ctx-sep" />
               <button onClick={() => setMsgCtx(null)}>{t('Cancelar')}</button>
             </div>

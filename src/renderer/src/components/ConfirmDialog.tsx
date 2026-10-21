@@ -9,6 +9,10 @@ interface ConfirmDialogProps {
   confirmLabel?: string;
   /** false = ação não destrutiva (botão azul em vez de vermelho). */
   danger?: boolean;
+  /** Conteúdo extra entre a mensagem e os botões (ex.: checkbox de opção). */
+  extra?: React.ReactNode;
+  /** Ação alternativa não-destrutiva à esquerda (ex.: "Manter mensagens"). */
+  secondaryAction?: { label: string; danger?: boolean; onConfirm: () => void };
   onConfirm: () => void;
   onCancel: () => void;
 }
@@ -19,6 +23,8 @@ export function ConfirmDialog({
   message,
   confirmLabel = 'Excluir',
   danger = true,
+  extra,
+  secondaryAction,
   onConfirm,
   onCancel,
 }: ConfirmDialogProps) {
@@ -40,7 +46,17 @@ export function ConfirmDialog({
           <span>{title}</span>
         </div>
         <div className="confirm-msg">{message}</div>
+        {extra}
         <div className="confirm-actions">
+          {secondaryAction && (
+            <button
+              className={secondaryAction.danger ? 'danger-btn' : 'btn btn-primary'}
+              style={{ marginRight: 'auto' }}
+              onClick={secondaryAction.onConfirm}
+            >
+              {secondaryAction.label}
+            </button>
+          )}
           <button className="ghost-btn" onClick={onCancel} autoFocus>
             {t('Cancelar')}
           </button>

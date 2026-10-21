@@ -246,6 +246,8 @@ export function AccountsSettings({
     message: string;
     confirmLabel?: string;
     danger?: boolean;
+    extra?: React.ReactNode;
+    secondaryAction?: { label: string; danger?: boolean; onConfirm: () => void };
     onOk: () => void;
   } | null>(null);
 
@@ -519,11 +521,14 @@ export function AccountsSettings({
   // cria uma base nova silenciosamente.
   const matchDeliveryPath = (g: ImportedAccountGuess): string | undefined => {
     const baseName = g.pstPath?.split(/[\\/]/).pop()?.toLowerCase();
+    // Só casa com base local gravável — um .pst aberto é somente leitura e
+    // nunca pode ser destino de entrega.
     return g.pstPath
       ? uniqueSources.find(
           (s) =>
-            s.filePath?.toLowerCase() === g.pstPath!.toLowerCase() ||
-            s.filePath?.split(/[\\/]/).pop()?.toLowerCase() === baseName,
+            s.kind === 'local' &&
+            (s.filePath?.toLowerCase() === g.pstPath!.toLowerCase() ||
+              s.filePath?.split(/[\\/]/).pop()?.toLowerCase() === baseName),
         )?.filePath
       : undefined;
   };
@@ -565,7 +570,12 @@ export function AccountsSettings({
       g,
       label: d.label || g.email,
       password: g.password || '',
-      path: d.deliveryPath || defaultStore || '',
+      path:
+        d.deliveryPath && !d.deliveryPath.toLowerCase().endsWith('.pst')
+          ? d.deliveryPath
+          : defaultStore && !defaultStore.toLowerCase().endsWith('.pst')
+            ? defaultStore
+            : '',
       newData: false,
       newName: '',
       leave: d.leaveOnServer ?? true,
@@ -610,8 +620,13 @@ export function AccountsSettings({
     setImpErr('');
     try {
       const d = draftFromGuess(imp.g);
-      let deliveryPath = imp.path || undefined;
-      if (imp.newData) {
+      // Conta IMAP importada não vincula nem cria arquivo de dados local.
+      // .pst também nunca é destino (somente leitura — só importa).
+      let deliveryPath =
+        imp.g.protocol === 'imap' || imp.path.toLowerCase().endsWith('.pst')
+          ? undefined
+          : imp.path || undefined;
+      if ((imp.newData || dataFiles.length === 0) && imp.g.protocol !== 'imap') {
         const src = await window.outlook.createLocalStoreAuto(
           imp.newName.trim() || t('Emails — {name}', { name: imp.label }),
         );
@@ -751,8 +766,15 @@ export function AccountsSettings({
       // "Criar novo arquivo de dados" — cria a base local e vincula só a esta conta.
       // Sem escolha explícita, deliveryPath vazio = arquivo principal do app.
       // A entrega é sempre na Caixa de Entrada; a escolha de pasta fica com as regras.
-      let toSave: AccountDraft = { ...draft, deliveryPath: draft.deliveryPath || undefined, deliveryFolder: undefined };
-      if (acctNewData) {
+      let toSave: AccountDraft = {
+        ...draft,
+        // IMAP usa o próprio servidor, sem vincular o arquivo local principal.
+        deliveryPath: draft.protocol === 'imap' ? undefined : draft.deliveryPath || undefined,
+        deliveryFolder: undefined,
+      };
+      // Sem nenhuma base local aberta a única opção válida é criar — o
+      // rádio "usar existente" fica desabilitado, mas garante aqui também.
+      if ((acctNewData || dataFiles.length === 0) && draft.protocol !== 'imap') {
         const src = await window.outlook.createLocalStoreAuto(
           acctNewDataName.trim() || t('Emails — {name}', { name: draft.label || draft.email }),
         );
@@ -760,10 +782,14 @@ export function AccountsSettings({
         toSave = { ...toSave, deliveryPath: src.filePath };
       }
       const saved = await window.outlook.upsertAccount(toSave);
-      await window.outlook.connectAccount(saved.id);
-      setEditing(false);
+      // Reabre a fonte com a config nova (o upsert fecha a sessão antiga —
+      // credenciais/servidor anteriores não podem ficar em memória)…
+      await window.outlook.connectAccount(saved.id).catch(() => {});
       reloadAccounts();
       onAccountsChanged();
+      // …e o app recarrega inteiro: árvores, pastas e estado visual partem
+      // do zero com a conta já reconectada. Nada depois disso executa.
+      window.location.reload();
     } catch (e) {
       setTestMsg(t('Erro ao salvar: {msg}', { msg: (e as Error).message }));
     } finally {
@@ -773,21 +799,33 @@ export function AccountsSettings({
 
   const remove = (id: string) => {
     const acc = accounts.find((a) => a.id === id);
-    // Base local vinculada SÓ a esta conta — por padrão é apagada junto (um
-    // .pst nunca é excluído: é o arquivo original do usuário).
+    // Base local vinculada SÓ a esta conta — o usuário DECIDE se apaga junto
+    // (padrão: manter — mensagens nunca somem sem escolha explícita). Um .pst
+    // nunca é excluído: é o arquivo original do usuário.
     const boundLocal = uniqueSources.find((s) => s.kind === 'local' && s.filePath === acc?.deliveryPath);
+    const doRemove = (deleteStore: boolean) => {
+      setConfirm(null);
+      void window.outlook.removeAccount(id, deleteStore).then(() => {
+        reloadAccounts();
+        onAccountsChanged();
+        window.location.reload();
+      });
+    };
     setConfirm({
       title: t('Remover conta'),
       message: boundLocal
-        ? t('Remover a conta "{email}"? A base de dados vinculada "{label}" também será excluída — todas as mensagens nela serão apagadas do disco.', { email: acc?.email || id, label: boundLocal.label })
+        ? t('Remover a conta "{email}"? A base de dados "{label}" está vinculada só a ela.', { email: acc?.email || id, label: boundLocal.label })
         : t('Remover a conta "{email}"?{pst}', { email: acc?.email || id, pst: acc?.deliveryPath ? ' ' + t('A base de dados vinculada (PST) não é apagada.') : '' }),
-      onOk: () => {
-        setConfirm(null);
-        void window.outlook.removeAccount(id, !!boundLocal).then(() => {
-          reloadAccounts();
-          onAccountsChanged();
-        });
-      },
+      confirmLabel: boundLocal ? t('Remover e apagar dados') : t('Remover'),
+      extra: boundLocal ? (
+        <div className="confirm-hint">
+          {t('A base "{label}" fica no painel de pastas com todos os e-mails — escolha abaixo se quer mantê-la ou apagá-la junto com a conta.', { label: boundLocal.label })}
+        </div>
+      ) : undefined,
+      secondaryAction: boundLocal
+        ? { label: t('Remover, manter mensagens'), danger: false, onConfirm: () => doRemove(false) }
+        : undefined,
+      onOk: () => doRemove(true),
     });
   };
 
@@ -936,7 +974,10 @@ export function AccountsSettings({
 
   const accountLabel = (id: string) =>
     id === 'all' ? t('Qualquer conta') : accounts.find((a) => a.id === id)?.email || id;
-  const dataFiles = uniqueSources.filter((s) => (s.kind === 'local' || s.kind === 'pst') && s.filePath);
+  // Destino de mensagens = só bases locais graváveis. .pst é somente
+  // leitura — serve para importar, nunca para receber entrega de conta.
+  const dataFiles = uniqueSources.filter((s) => s.kind === 'local' && s.filePath);
+  const hasPstOpen = uniqueSources.some((s) => s.kind === 'pst');
   const accountMissing = (id: string) => id !== 'all' && !accounts.some((a) => a.id === id);
   const pstLabel = (p: string) => sources.find((s) => s.filePath === p)?.label || p.split(/[\\/]/).pop() || p;
 
@@ -961,7 +1002,7 @@ export function AccountsSettings({
   };
 
   return (
-    <div className="set-overlay" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
+    <div className="set-overlay" >
       <div className="set-window" onClick={(e) => e.stopPropagation()}>
         <div className="set-head">
           <div className="set-head-icon">
@@ -1297,6 +1338,7 @@ export function AccountsSettings({
                           principal — assim a mesma base sempre mostra o mesmo
                           nome, e "(principal)" indica a padrão. */}
                       {(() => {
+                        if (a.protocol === 'imap') return <span className="acct-sub">{t('Servidor IMAP')}</span>;
                         const eff = a.deliveryPath || defaultStore;
                         if (!eff) return <span className="acct-sub">{t('Base padrão')}</span>;
                         return (
@@ -1334,7 +1376,11 @@ export function AccountsSettings({
           </button>
 
           {editing && (
-            <div className="set-overlay" style={{ zIndex: 140 }} onMouseDown={(e) => e.target === e.currentTarget && setEditing(false)}>
+            /* Sem fechar-ao-clicar-fora: no Windows, clicar na janela do app
+               para focá-la depois de trocar de tela entrega o clique no
+               overlay e o formulário inteiro se perdia. Só fecha pelo X ou
+               Cancelar. */
+            <div className="set-overlay" style={{ zIndex: 140 }} >
               <div
                 className="set-window acct-window"
                 onClick={(e) => e.stopPropagation()}
@@ -1391,13 +1437,15 @@ export function AccountsSettings({
                   <select
                     className="inp"
                     value={draft.protocol}
-                    onChange={(e) =>
+                    onChange={(e) => {
+                      if (e.target.value === 'imap') setAcctNewData(false);
                       setDraft({
                         ...draft,
                         protocol: e.target.value as 'imap' | 'pop3',
+                        deliveryPath: e.target.value === 'imap' ? undefined : draft.deliveryPath,
                         imapPort: e.target.value === 'pop3' ? (draft.imapSecure ? 995 : 110) : draft.imapSecure ? 993 : 143,
-                      })
-                    }
+                      });
+                    }}
                   >
                     <option value="pop3">POP3</option>
                     <option value="imap">IMAP</option>
@@ -1421,33 +1469,69 @@ export function AccountsSettings({
               </Field>
               <div className="grp-title">{t('Arquivo de dados')}</div>
               <p className="set-hint" style={{ margin: 0 }}>
-                {t('Onde as mensagens desta conta são guardadas. Você pode usar um arquivo que já existe ou criar um novo só para esta conta.')}
+                {draft.protocol === 'imap'
+                  ? t('IMAP mantém as mensagens no servidor. Nenhum arquivo local será criado ou vinculado automaticamente.')
+                  : t('Onde as mensagens desta conta são guardadas. Você pode usar um arquivo que já existe ou criar um novo só para esta conta.')}
               </p>
+              {draft.protocol !== 'imap' && (
+              <>
               <div className="acct-data-choice" role="radiogroup">
-                <label className={`acct-data-opt${!acctNewData ? ' on' : ''}`}>
-                  <input type="radio" checked={!acctNewData} onChange={() => setAcctNewData(false)} />
+                <label
+                  className={`acct-data-opt${!acctNewData ? ' on' : ''}`}
+                  title={dataFiles.length === 0 ? t('Não existe um arquivo de dados ainda — crie um novo ao lado.') : ''}
+                  style={dataFiles.length === 0 ? { opacity: 0.5, cursor: 'not-allowed' } : undefined}
+                >
+                  <input
+                    type="radio"
+                    checked={!acctNewData}
+                    disabled={dataFiles.length === 0}
+                    onChange={() => setAcctNewData(false)}
+                  />
                   <span>
                     <strong>{t('Usar um arquivo de dados existente')}</strong>
-                    <em>{t('Sem escolha, a conta usa o arquivo principal. Entrega na Caixa de Entrada.')}</em>
+                    <em>
+                      {dataFiles.length === 0
+                        ? t('Não existe um arquivo de dados — é preciso criar um para esta conta.')
+                        : t('Sem escolha, a conta usa o arquivo principal. Entrega na Caixa de Entrada.')}
+                    </em>
                   </span>
                 </label>
-                <label className={`acct-data-opt${acctNewData ? ' on' : ''}`}>
-                  <input type="radio" checked={acctNewData} onChange={() => setAcctNewData(true)} />
+                <label className={`acct-data-opt${acctNewData || dataFiles.length === 0 ? ' on' : ''}`}>
+                  <input
+                    type="radio"
+                    checked={acctNewData || dataFiles.length === 0}
+                    onChange={() => setAcctNewData(true)}
+                  />
                   <span>
                     <strong>{t('Criar um novo arquivo de dados')}</strong>
                     <em>{t('Cria uma base própria ao salvar. Se for o primeiro, vira o principal.')}</em>
                   </span>
                 </label>
               </div>
-              {!acctNewData ? (
+              {hasPstOpen && (
+                <p className="set-hint" style={{ margin: '4px 0 0' }}>
+                  {t('Arquivos .pst abertos são somente leitura — eles servem só para importar; emails não podem ser entregues neles.')}
+                </p>
+              )}
+              {!acctNewData && dataFiles.length > 0 ? (
                 <Field label="Arquivo de dados">
                   <select
                     className="inp"
-                    value={draft.deliveryPath || defaultStore || ''}
-                    disabled={dataFiles.length === 0}
+                    value={
+                      draft.deliveryPath ||
+                      (defaultStore && !defaultStore.toLowerCase().endsWith('.pst') ? defaultStore : '') ||
+                      ''
+                    }
                     onChange={(e) => setDraft({ ...draft, deliveryPath: e.target.value || undefined })}
                   >
-                    {dataFiles.length === 0 && <option value="">{t('Nenhum arquivo de dados aberto')}</option>}
+                    {draft.deliveryPath && !dataFiles.some((s) => s.filePath === draft.deliveryPath) && (
+                      <option value={draft.deliveryPath}>
+                        {draft.deliveryPath.split(/[\\/]/).pop()}
+                        {draft.deliveryPath.toLowerCase().endsWith('.pst')
+                          ? ` ${t('(PST — não recebe entrega!)')}`
+                          : ` ${t('(base não aberta)')}`}
+                      </option>
+                    )}
                     {dataFiles.map((s) => (
                       <option key={s.id} value={s.filePath}>
                         {s.label}
@@ -1465,6 +1549,8 @@ export function AccountsSettings({
                     onChange={(e) => setAcctNewDataName(e.target.value)}
                   />
                 </Field>
+              )}
+              </>
               )}
               </>
               )}
@@ -1585,7 +1671,7 @@ export function AccountsSettings({
         {/* Assistente de importação — uma conta por vez, em duas etapas.
             As informações só aparecem depois de clicar nos botões do topo. */}
         {guesses !== null && (
-            <div className="set-overlay" style={{ zIndex: 120 }} onMouseDown={(e) => e.target === e.currentTarget && !impBusy && setGuesses(null)}>
+            <div className="set-overlay" style={{ zIndex: 120 }} >
               <div className="set-window" style={{ width: 580, height: 'auto' }} onClick={(e) => e.stopPropagation()}>
                 <div className="set-head">
                   <div className="set-head-icon"><Icon name="envelope" size={18} /></div>
@@ -1749,22 +1835,43 @@ export function AccountsSettings({
 
                         <div className="grp-title" style={{ marginTop: 6 }}>{t('Arquivo de dados')}</div>
                         <div className="acct-data-choice" role="radiogroup">
-                          <label className={`acct-data-opt${!imp.newData ? ' on' : ''}`}>
-                            <input type="radio" checked={!imp.newData} onChange={() => setImp({ ...imp, newData: false })} />
+                          <label
+                            className={`acct-data-opt${!imp.newData ? ' on' : ''}`}
+                            style={dataFiles.length === 0 ? { opacity: 0.5, cursor: 'not-allowed' } : undefined}
+                          >
+                            <input
+                              type="radio"
+                              checked={!imp.newData}
+                              disabled={dataFiles.length === 0}
+                              onChange={() => setImp({ ...imp, newData: false })}
+                            />
                             <span>
                               <strong>{t('Usar um arquivo de dados existente')}</strong>
-                              <em>{t('As mensagens desta conta entram na Caixa de Entrada dele.')}</em>
+                              <em>
+                                {dataFiles.length === 0
+                                  ? t('Não existe um arquivo de dados — é preciso criar um para esta conta.')
+                                  : t('As mensagens desta conta entram na Caixa de Entrada dele.')}
+                              </em>
                             </span>
                           </label>
-                          <label className={`acct-data-opt${imp.newData ? ' on' : ''}`}>
-                            <input type="radio" checked={imp.newData} onChange={() => setImp({ ...imp, newData: true })} />
+                          <label className={`acct-data-opt${imp.newData || dataFiles.length === 0 ? ' on' : ''}`}>
+                            <input
+                              type="radio"
+                              checked={imp.newData || dataFiles.length === 0}
+                              onChange={() => setImp({ ...imp, newData: true })}
+                            />
                             <span>
                               <strong>{t('Criar um novo arquivo de dados')}</strong>
                               <em>{t('Base própria só para esta conta.')}</em>
                             </span>
                           </label>
                         </div>
-                        {!imp.newData ? (
+                        {hasPstOpen && (
+                          <p className="set-hint" style={{ margin: '4px 0 0' }}>
+                            {t('Arquivos .pst abertos são somente leitura — eles servem só para importar; emails não podem ser entregues neles.')}
+                          </p>
+                        )}
+                        {!imp.newData && dataFiles.length > 0 ? (
                           <Field label="Arquivo de dados">
                             <select
                               className="inp"
@@ -2660,13 +2767,15 @@ export function AccountsSettings({
           message={confirm.message}
           confirmLabel={confirm.confirmLabel}
           danger={confirm.danger}
+          extra={confirm.extra}
+          secondaryAction={confirm.secondaryAction}
           onConfirm={confirm.onOk}
           onCancel={() => setConfirm(null)}
         />
       )}
       {/* Modal: novo arquivo de dados */}
       {showNewStore && (
-        <div className="set-overlay" style={{ zIndex: 110 }} onMouseDown={(e) => e.target === e.currentTarget && setShowNewStore(false)}>
+        <div className="set-overlay" style={{ zIndex: 110 }} >
           <div className="set-window" style={{ width: 480, height: 'auto' }} onClick={(e) => e.stopPropagation()}>
             <div className="set-head">
               <div className="set-head-icon"><Icon name="new" size={18} /></div>
@@ -2735,7 +2844,7 @@ export function AccountsSettings({
       )}
 
       {migrateSrc && (
-        <div className="set-overlay" style={{ zIndex: 110 }} onMouseDown={(e) => e.target === e.currentTarget && !migrateProgress && setMigrateSrc(null)}>
+        <div className="set-overlay" style={{ zIndex: 110 }} >
           <div className="set-window" style={{ width: 480, height: 'auto' }} onClick={(e) => e.stopPropagation()}>
             <div className="set-head">
               <div className="set-head-icon"><Icon name="archive" size={18} /></div>
@@ -2885,7 +2994,7 @@ export function AccountsSettings({
         <div
           className="set-overlay"
           style={{ zIndex: 110 }}
-          onMouseDown={(e) => e.target === e.currentTarget && !migrateProgress && setTbProfiles(null)}
+          
         >
           <div className="set-window" style={{ width: 480, height: 'auto' }} onClick={(e) => e.stopPropagation()}>
             <div className="set-head">

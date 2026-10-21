@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Icon } from '../icons';
 import { guessServers } from '../utils';
 import { getLang, setLang, t, useLang } from '../i18n';
-import type { AccountDraft, ImportedAccountGuess } from '../../../shared/types';
+import type { AccountDraft, ImportedAccountGuess, MailSource } from '../../../shared/types';
 
 interface OnboardingWizardProps {
   /** Recarrega fontes/contas na tela principal */
@@ -49,7 +49,8 @@ interface WizardDraft {
   step: Step;
   email: string;
   label: string;
-  storeChoice: 'new' | 'newCustom' | 'none';
+  /** 'new' | 'newCustom' | 'none' | 'existing:<caminho da base>' */
+  storeChoice: string;
 }
 
 function loadDraft(): WizardDraft | null {
@@ -78,13 +79,16 @@ export function OnboardingWizard({ onChanged, onDone }: OnboardingWizardProps) {
   const [email, setEmail] = useState(draft0?.email || '');
   const [label, setLabel] = useState(draft0?.label || '');
   const [password, setPassword] = useState('');
-  const [storeChoice, setStoreChoice] = useState<'new' | 'newCustom' | 'none'>(
-    draft0?.storeChoice || 'new',
-  );
+  const [storeChoice, setStoreChoice] = useState<string>(draft0?.storeChoice || 'new');
+  /** Bases locais já abertas — oferecidas como destino existente na conta. */
+  const [localStores, setLocalStores] = useState<MailSource[]>([]);
 
   useEffect(() => {
     window.outlook.isOutlookImportAvailable().then(setImportAvailable);
     window.outlook.getDataDir?.().then((v) => setDataDirPath(v || ''));
+    window.outlook
+      .listSources()
+      .then((list) => setLocalStores(list.filter((s) => s.kind === 'local' && s.filePath)));
   }, []);
 
   // Persiste o rascunho a cada mudança de etapa/campo relevante
@@ -201,14 +205,17 @@ export function OnboardingWizard({ onChanged, onDone }: OnboardingWizardProps) {
   const [selectedEmails, setSelectedEmails] = useState<Set<string>>(new Set());
 
   const addGuess = async (g: ImportedAccountGuess) => {
-    // Cada conta importada ganha sua própria base de dados em Mail/ —
+    // Conta POP3 importada ganha sua própria base de dados em Mail/ —
     // modelo Thunderbird, e igual ao que o app faz ao criar conta manual.
+    // IMAP não: as mensagens ficam no servidor, sem arquivo de dados local.
     let deliveryPath: string | undefined;
-    try {
-      const src = await window.outlook.createLocalStoreAuto(t('Emails — {name}', { name: g.email }));
-      deliveryPath = src?.filePath;
-    } catch {
-      // sem base — a conta ainda entra, vincula depois
+    if (g.protocol !== 'imap') {
+      try {
+        const src = await window.outlook.createLocalStoreAuto(t('Emails — {name}', { name: g.email }));
+        deliveryPath = src?.filePath;
+      } catch {
+        // sem base — a conta ainda entra, vincula depois
+      }
     }
     const draft: AccountDraft = {
       label: g.displayName || g.email,
@@ -257,22 +264,27 @@ export function OnboardingWizard({ onChanged, onDone }: OnboardingWizardProps) {
     setMsg('');
     try {
       const g = guessProtocol(email);
+      // IMAP mantém tudo no servidor — não cria nem vincula arquivo de dados.
       let deliveryPath: string | undefined;
-      if (storeChoice === 'new') {
-        // Local padrão: Documentos/Unit Mail
-        const src = await window.outlook.createLocalStoreAuto(t('Emails — {name}', { name: label || email }));
-        if (src?.filePath) {
-          deliveryPath = src.filePath;
+      if (g.protocol !== 'imap') {
+        if (storeChoice.startsWith('existing:')) {
+          deliveryPath = storeChoice.slice('existing:'.length);
+        } else if (storeChoice === 'new') {
+          // Local padrão: pasta Mail/ da pasta de dados
+          const src = await window.outlook.createLocalStoreAuto(t('Emails — {name}', { name: label || email }));
+          if (src?.filePath) {
+            deliveryPath = src.filePath;
+          }
+        } else if (storeChoice === 'newCustom') {
+          // Usuário escolhe a pasta onde o arquivo de dados será criado
+          const dir = await window.outlook.pickStoreDir();
+          if (!dir) {
+            setMsg(t('Seleção de pasta cancelada — a conta não foi criada.'));
+            return;
+          }
+          const src = await window.outlook.createLocalStoreIn(t('Emails — {name}', { name: label || email }), dir);
+          if (src?.filePath) deliveryPath = src.filePath;
         }
-      } else if (storeChoice === 'newCustom') {
-        // Usuário escolhe a pasta onde o arquivo de dados será criado
-        const dir = await window.outlook.pickStoreDir();
-        if (!dir) {
-          setMsg(t('Seleção de pasta cancelada — a conta não foi criada.'));
-          return;
-        }
-        const src = await window.outlook.createLocalStoreIn(t('Emails — {name}', { name: label || email }), dir);
-        if (src?.filePath) deliveryPath = src.filePath;
       }
       const draft: AccountDraft = {
         label: label || email,
@@ -316,9 +328,10 @@ export function OnboardingWizard({ onChanged, onDone }: OnboardingWizardProps) {
       // ignora
     }
     void window.outlook.setSetupComplete(true);
-    // Quem pulou a configuração de conta ficaria sem nenhum arquivo de dados
-    // — cria "Unit Mail Data" como principal, como o Outlook faz no 1º uso.
-    void window.outlook.ensureDefaultStore?.().then(() => onChanged());
+    // Nenhum arquivo de dados é criado aqui — base só nasce na criação de
+    // conta ou em Configurações → Arquivos de Dados. Quem pulou pode abrir
+    // um PST/criar tudo depois.
+    onChanged();
     onDone();
   };
 
@@ -573,28 +586,51 @@ export function OnboardingWizard({ onChanged, onDone }: OnboardingWizardProps) {
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
               />
-              <label style={{ fontSize: 12, color: 'var(--text-dim)' }}>
-                {t('Onde as mensagens serão entregues')}
-              </label>
-              <select
-                style={inputStyle}
-                value={storeChoice}
-                onChange={(e) => setStoreChoice(e.target.value as 'new' | 'newCustom' | 'none')}
-              >
-                <option value="new">{t('Nova base na pasta de dados do app (padrão)')}</option>
-                <option value="newCustom">{t('Nova base em pasta à minha escolha…')}</option>
-                <option value="none">{t('Sem base de dados por enquanto')}</option>
-              </select>
-              <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>
-                {storeChoice === 'new'
-                  ? t('Cria a base da conta dentro da pasta de dados (Mail/) — os emails ficam no formato próprio do app.')
-                  : storeChoice === 'newCustom'
-                    ? t('Você escolhe a pasta onde a nova base de dados será criada.')
-                    : t('Sem entrega automática — você pode vincular uma base depois.')}
-              </span>
-              <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>
-                {t('Tem um arquivo .pst do Outlook? Depois use Configurações → Arquivos de Dados → "Importar arquivo .pst…" para trazer tudo para o formato do app.')}
-              </span>
+              {email.includes('@') && guessProtocol(email).protocol === 'imap' ? (
+                <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>
+                  {t('Esta conta será configurada como IMAP — as mensagens ficam no servidor e nenhum arquivo de dados local é criado.')}
+                </span>
+              ) : (
+                <>
+                  <label style={{ fontSize: 12, color: 'var(--text-dim)' }}>
+                    {t('Onde as mensagens serão entregues')}
+                  </label>
+                  <select
+                    style={inputStyle}
+                    value={storeChoice}
+                    onChange={(e) => setStoreChoice(e.target.value)}
+                  >
+                    <option value="new">{t('Nova base na pasta de dados do app (padrão)')}</option>
+                    <option value="newCustom">{t('Nova base em pasta à minha escolha…')}</option>
+                    {localStores.map((s) => (
+                      <option key={s.id} value={`existing:${s.filePath}`}>
+                        {t('Usar base existente: {name}', { name: s.label })}
+                      </option>
+                    ))}
+                    {/* Sem nenhuma base local, a entrega é obrigatória — só resta criar. */}
+                    {localStores.length > 0 && (
+                      <option value="none">{t('Sem base de dados por enquanto')}</option>
+                    )}
+                  </select>
+                  <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>
+                    {storeChoice === 'new'
+                      ? t('Cria a base da conta dentro da pasta de dados (Mail/) — os emails ficam no formato próprio do app.')
+                      : storeChoice === 'newCustom'
+                        ? t('Você escolhe a pasta onde a nova base de dados será criada.')
+                        : storeChoice.startsWith('existing:')
+                          ? t('A conta entrega na base já aberta — nada novo é criado.')
+                          : t('Sem entrega automática — você pode vincular uma base depois.')}
+                  </span>
+                  {localStores.length === 0 && (
+                    <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>
+                      {t('Não existe nenhum arquivo de dados ainda — é preciso criar um para esta conta (POP3 precisa de onde guardar as mensagens).')}
+                    </span>
+                  )}
+                  <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>
+                    {t('Tem um arquivo .pst do Outlook? Depois use Configurações → Arquivos de Dados → "Importar arquivo .pst…" para trazer tudo para o formato do app.')}
+                  </span>
+                </>
+              )}
             </div>
             {msg && <div style={{ fontSize: 12, marginTop: 8, color: '#c00' }}>{msg}</div>}
             <div className="wizard-nav">

@@ -169,11 +169,40 @@ export class SourceManager {
   ): Promise<'movido' | 'copiado'> {
     const src = this.backend(srcId);
     const dst = this.backend(dstId);
-    if (!(src instanceof PstService) || !(dst instanceof PstService)) {
-      throw new Error('Mover itens só é suportado em arquivos de dados (PST/base local)');
-    }
-    if (!dst.writableDirFor(dstFolderId)) {
+    const srcImap = src instanceof ImapMailSource;
+    const dstImap = dst instanceof ImapMailSource;
+    if (!srcImap && !(src instanceof PstService)) throw new Error('Fonte de origem não aceita mensagens');
+    if (!dstImap && !(dst instanceof PstService)) throw new Error('Destino não aceita mensagens');
+    if (!dstImap && dst instanceof PstService && !dst.writableDirFor(dstFolderId)) {
       throw new Error('A pasta de destino não aceita itens');
+    }
+    // Mesma conta IMAP → MOVE nativo no servidor (sem baixar/subir a
+    // mensagem). Contas IMAP diferentes caem no fluxo genérico de upload.
+    if (srcImap && src === dst) {
+      await src.moveWithin(srcFolderId, index, dstFolderId);
+      return 'movido';
+    }
+    // IMAP não usa diretórios locais. Exporta a mensagem e faz APPEND no
+    // servidor; só remove a origem depois que o upload terminou. Isso permite
+    // migrar .eml/PST para uma conta online e também mover entre contas.
+    if (dstImap) {
+      const raw = srcImap
+        ? await src.downloadRaw(srcFolderId, index)
+        : await (src as PstService).exportItemEml(srcFolderId, index);
+      const wasRead = src instanceof PstService
+        ? src.isItemRead?.(srcFolderId, index)
+        : true;
+      await dst.appendItem(dstFolderId, raw, wasRead);
+      if (srcImap) await src.expungeItem(srcFolderId, index);
+      else if ((src as PstService).isLocalItem(srcFolderId, index)) (src as PstService).deleteItem(srcFolderId, index);
+      else (src as PstService).hideItem(srcFolderId, index);
+      return 'movido';
+    }
+    if (srcImap) {
+      const raw = await src.downloadRaw(srcFolderId, index);
+      await (dst as PstService).importItemEml(dstFolderId, raw, true);
+      await src.expungeItem(srcFolderId, index);
+      return 'movido';
     }
     // Lê o estado de leitura ANTES do export — para itens do PST o export
     // já marca como lido (efeito colateral de getItem). Assim um item não
@@ -208,12 +237,24 @@ export class SourceManager {
   ): Promise<number> {
     const src = this.backend(srcId);
     const dst = this.backend(dstId);
+    if (src instanceof ImapMailSource || dst instanceof ImapMailSource) {
+      let moved = 0;
+      const run = async () => {
+        for (const ix of [...indexes].sort((a, b) => b - a)) {
+          await this.moveItem(srcId, srcFolderId, ix, dstId, dstFolderId);
+          moved++;
+        }
+      };
+      // Origem local → batch grava readstate/hidden uma vez no fim do lote,
+      // não por item (migração de centenas de mensagens para o servidor).
+      if (src instanceof PstService) await src.batch(run);
+      else await run();
+      return moved;
+    }
     if (!(src instanceof PstService) || !(dst instanceof PstService)) {
-      throw new Error('Mover itens só é suportado em arquivos de dados (PST/base local)');
+      throw new Error('Mover itens só é suportado em arquivos de dados');
     }
-    if (!dst.writableDirFor(dstFolderId)) {
-      throw new Error('A pasta de destino não aceita itens');
-    }
+    if (!dst.writableDirFor(dstFolderId)) throw new Error('A pasta de destino não aceita itens');
     let moved = 0;
     // Ordem decrescente: remover um item não desloca os índices menores que
     // ainda serão processados — e itens do PST (índices mais altos) são
@@ -235,6 +276,20 @@ export class SourceManager {
   /** Exclui vários itens de uma pasta num lote (mesma economia de I/O). */
   async deleteItems(sourceId: string, folderId: string, indexes: number[]): Promise<number> {
     const svc = this.backend(sourceId);
+    // Conta IMAP: exclusão vai para Itens Excluídos do servidor (ou expurgo
+    // quando a pasta não existe) — o índice do item é o UID da mensagem.
+    if (svc instanceof ImapMailSource) {
+      let n = 0;
+      for (const ix of [...indexes].sort((a, b) => b - a)) {
+        try {
+          await svc.deleteItem(folderId, ix);
+          n++;
+        } catch {
+          // mensagem já removida no servidor — segue com as demais
+        }
+      }
+      return n;
+    }
     if (!(svc instanceof PstService)) {
       throw new Error('Excluir só é suportado em arquivos de dados (PST/base local)');
     }
@@ -289,18 +344,24 @@ export class SourceManager {
   }
 
   /** Cria uma pasta gravável na base (raiz ou dentro de outra pasta). */
-  createFolder(sourceId: string, name: string, parentFolderId: string | null): FolderNode[] {
+  async createFolder(sourceId: string, name: string, parentFolderId: string | null): Promise<FolderNode[]> {
     const svc = this.backend(sourceId);
+    if (svc instanceof ImapMailSource) {
+      return svc.createFolder(name, parentFolderId);
+    }
     if (!(svc instanceof PstService)) {
-      throw new Error('Criar pasta só é suportado em arquivos de dados locais');
+      throw new Error('Esta fonte não aceita criação de pastas');
     }
     svc.createArchiveFolder(name, parentFolderId);
     return svc.getFolderTree();
   }
 
-  /** Renomeia uma pasta local. Retorna a árvore atualizada. */
-  renameFolder(sourceId: string, folderId: string, newName: string): FolderNode[] {
+  /** Renomeia uma pasta — local renomeia na base, IMAP renomeia no servidor. */
+  async renameFolder(sourceId: string, folderId: string, newName: string): Promise<FolderNode[]> {
     const svc = this.backend(sourceId);
+    if (svc instanceof ImapMailSource) {
+      return svc.renameFolder(folderId, newName);
+    }
     if (!(svc instanceof PstService)) throw new Error('Só arquivos de dados');
     const node = findNodeById(svc.getFolderTree(), folderId);
     if (node && isProtectedFolderName(node.name)) {
@@ -312,9 +373,12 @@ export class SourceManager {
     return svc.getFolderTree();
   }
 
-  /** Exclui uma pasta local com todo o conteúdo. */
-  deleteFolder(sourceId: string, folderId: string): FolderNode[] {
+  /** Exclui uma pasta com todo o conteúdo — local apaga da base, IMAP apaga no servidor. */
+  async deleteFolder(sourceId: string, folderId: string): Promise<FolderNode[]> {
     const svc = this.backend(sourceId);
+    if (svc instanceof ImapMailSource) {
+      return svc.deleteFolder(folderId);
+    }
     if (!(svc instanceof PstService)) throw new Error('Só arquivos de dados');
     const tree = svc.getFolderTree();
     const node = findNodeById(tree, folderId);
@@ -349,20 +413,30 @@ export class SourceManager {
     return svc.emptyFolder(folderId);
   }
 
-  /** Marca todos os itens locais da pasta como lidos. */
-  markAllRead(sourceId: string, folderId: string): void {
+  /** Marca todos os itens da pasta como lidos (local em disco, IMAP no servidor). */
+  async markAllRead(sourceId: string, folderId: string): Promise<void> {
     const svc = this.backend(sourceId);
-    if (!(svc instanceof PstService)) {
-      throw new Error('Marcar como lidas ainda não é suportado em contas IMAP.');
+    if (svc instanceof PstService) {
+      svc.markAllRead(folderId);
+      return;
     }
-    svc.markAllRead(folderId);
+    if (svc instanceof ImapMailSource) {
+      await svc.markAllRead(folderId);
+      return;
+    }
+    throw new Error('Marcar como lidas não é suportado nesta fonte.');
   }
 
-  /** Define lido/não-lido de um item local de uma base. */
-  setItemRead(sourceId: string, folderId: string, index: number, read: boolean): void {
+  /** Define lido/não-lido — local grava na base, IMAP muda a flag \Seen no servidor. */
+  async setItemRead(sourceId: string, folderId: string, index: number, read: boolean): Promise<void> {
     const svc = this.backend(sourceId);
-    if (!(svc instanceof PstService)) return;
-    svc.setItemRead(folderId, index, read);
+    if (svc instanceof PstService) {
+      svc.setItemRead(folderId, index, read);
+      return;
+    }
+    if (svc instanceof ImapMailSource) {
+      await svc.setItemRead(folderId, index, read);
+    }
   }
 
   async close(sourceId: string): Promise<void> {

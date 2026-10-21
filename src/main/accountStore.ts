@@ -176,6 +176,7 @@ export class AccountStore {
       ? encryptSecret(draft.smtpPassword)
       : { secret: '', secretEncrypted: false };
     const existingIdx = all.findIndex((a) => a.id === id);
+    const isImap = (draft.protocol || 'imap') === 'imap';
     const base: StoredAccount = {
       id,
       label: draft.label,
@@ -184,8 +185,10 @@ export class AccountStore {
       signature: draft.signature || '',
       signatureNewId: draft.signatureNewId,
       signatureReplyId: draft.signatureReplyId,
-      deliveryPath: draft.deliveryPath,
-      deliveryFolder: draft.deliveryFolder,
+      // IMAP não tem arquivo de dados — qualquer vínculo vindo de outra tela
+      // (wizard, importação, backup) é ignorado aqui na gravação.
+      deliveryPath: isImap ? undefined : draft.deliveryPath,
+      deliveryFolder: isImap ? undefined : draft.deliveryFolder,
       leaveOnServer: draft.leaveOnServer ?? true,
       leaveDays: draft.leaveDays ?? 0,
       allowSelfSigned: draft.allowSelfSigned ?? false,

@@ -526,9 +526,9 @@ export default function App() {
       const errs = results.filter((r) => r.error).map((r) => r.error).join('; ');
       if (errs) setError(t('Erro no envio/recebimento: {errs}', { errs }));
       refreshSources();
-      // Emails novos entregues → revalida a pasta aberta sem precisar
-      // sair e voltar nela (o count-check ignora quando nada mudou nela)
-      if (results.some((r) => r.archived > 0)) refreshOpenFolder();
+      // Emails novos (entregues localmente ou detectados no servidor IMAP)
+      // → revalida a pasta aberta sem precisar sair e voltar nela.
+      if (results.some((r) => r.archived > 0 || (r.newOnServer ?? 0) > 0)) refreshOpenFolder();
       // Limpa o indicador da barra de status alguns segundos após o fim
       setTimeout(() => {
         setSyncTasks((prev) =>
@@ -2100,28 +2100,15 @@ export default function App() {
     openDraft(forwardDraftOf(detail));
   }, [detail, defaultAccountId]);
 
-  /** Pastas de uma base achatadas p/ submenu "Mover" do menu de contexto. */
-  const folderOptionsFor = useCallback(
-    (sourceId: string): Array<{ id: string; label: string }> => {
-      const out: Array<{ id: string; label: string }> = [];
-      const flat = (ns: FolderNode[], d: number) => {
-        for (const n of ns) {
-          out.push({
-            id: n.id,
-            label: `${'　'.repeat(d)}${localizeFolderName(n.name, lang)}`,
-          });
-          flat(n.children, d + 1);
-        }
-      };
-      flat(applyFolderOrder(folderTrees[sourceId] || [], sourceId, '', folderOrders), 0);
-      return out;
-    },
-    [folderTrees, folderOrders, lang],
-  );
-
   /** Move índices de uma pasta para outra (na mesma base) — usado pelo ctx menu. */
   const moveIndexesTo = useCallback(
-    async (sourceId: string, folderId: string, indexes: number[], destFolderId: string) => {
+    async (
+      sourceId: string,
+      folderId: string,
+      indexes: number[],
+      destFolderId: string,
+      destSourceId = sourceId,
+    ) => {
       const inOpenFolder =
         selected && selected.sourceId === sourceId && selected.folder.id === folderId;
       // Otimista — mesmo fluxo da exclusão: os itens saem da lista na hora,
@@ -2156,7 +2143,7 @@ export default function App() {
       }
       try {
         // Em lote: uma chamada IPC, estados em disco gravados uma vez no fim
-        await window.outlook.moveItems(sourceId, folderId, indexes, sourceId, destFolderId);
+        await window.outlook.moveItems(sourceId, folderId, indexes, destSourceId, destFolderId);
         setError('');
       } catch (e) {
         setError(t('Erro ao mover: {msg}', { msg: (e as Error).message }));
@@ -2406,7 +2393,10 @@ export default function App() {
             });
           }
         } else if (action.startsWith('move:')) {
-          await moveIndexesTo(ctx.sourceId, ctx.folderId, indexes, action.slice(5));
+          const sep = action.indexOf('\u0000', 5);
+          const destSourceId = sep >= 0 ? action.slice(5, sep) : ctx.sourceId;
+          const destFolderId = sep >= 0 ? action.slice(sep + 1) : action.slice(5);
+          await moveIndexesTo(ctx.sourceId, ctx.folderId, indexes, destFolderId, destSourceId);
         } else if (action === 'rules') {
           openSettings('rules');
         } else if (action === 'catsManage') {
@@ -2650,7 +2640,8 @@ export default function App() {
                     selIndexes={selIndexes}
                     onSelChange={onSelChange}
                     onDeleteKey={deleteItem}
-                    moveTargets={folderOptionsFor}
+                    moveEntries={entries}
+                    onMoveMenuOpen={() => void refreshSources()}
                     onCtxAction={msgCtxAction}
                     onLoadMore={loadMore}
                     hasMore={items.length < itemCount}
@@ -2700,7 +2691,8 @@ export default function App() {
                     selIndexes={selIndexes}
                     onSelChange={onSelChange}
                     onDeleteKey={deleteItem}
-                    moveTargets={folderOptionsFor}
+                    moveEntries={entries}
+                    onMoveMenuOpen={() => void refreshSources()}
                     onCtxAction={msgCtxAction}
                     onLoadMore={loadMore}
                     hasMore={items.length < itemCount}
@@ -2750,7 +2742,8 @@ export default function App() {
                   selIndexes={selIndexes}
                   onSelChange={onSelChange}
                   onDeleteKey={deleteItem}
-                  moveTargets={folderOptionsFor}
+                  moveEntries={entries}
+                    onMoveMenuOpen={() => void refreshSources()}
                   onCtxAction={msgCtxAction}
                   onLoadMore={loadMore}
                   hasMore={items.length < itemCount}

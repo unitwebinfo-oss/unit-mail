@@ -2731,11 +2731,43 @@ body.dark .tb-attach:hover {
 .ctx-move {
   display: flex;
   flex-direction: column;
+  min-width: 330px;
+  max-width: min(560px, calc(100vw - 24px));
+  /* Menu compacto tipo Outlook — não ocupa a tela inteira. */
+  max-height: min(540px, calc(100vh - 32px));
+  /* min-height:0 — senão o flex estica o painel além do max-height e a
+     rolagem interna nunca ativa (pastas no fim da lista ficam invisíveis). */
+  min-height: 0;
+  overflow: hidden;
+}
+.ctx-move-tree {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: 3px;
+}
+.ctx-move-tree button {
+  width: 100%;
+}
+/* Seletor "Mover" como árvore — mesmas linhas do painel de pastas. */
+.ctx-move-tree .folder-item {
+  cursor: pointer;
+  border-radius: 4px;
+}
+.ctx-move-tree .mv-src-head {
+  font-weight: 700;
+}
+.ctx-move-empty {
+  padding: 10px 12px;
+  font-size: 12px;
+  color: var(--text-dim);
 }
 .ctx-move-title {
   padding: 8px 10px 4px;
   font-size: 11px;
   color: var(--text-dim);
+  flex: 0 0 auto;
 }
 .folder-item.fav-head {
   font-weight: 700;
@@ -3350,6 +3382,28 @@ body.dark .sync-dialog { box-shadow: 0 10px 30px rgba(0,0,0,.6); }
   border-bottom: 1px solid var(--border);
   font-size: 13px;
   font-weight: 600;
+}
+.confirm-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 10px;
+  font-size: 12.5px;
+  line-height: 1.4;
+  cursor: pointer;
+}
+.confirm-check input {
+  margin-top: 2px;
+  flex: 0 0 auto;
+}
+.confirm-hint {
+  margin: 0 16px 4px;
+  padding: 8px 10px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-dim, #666);
+  background: var(--surface-mid);
+  border-radius: 6px;
 }
 .confirm-msg {
   padding: 14px 16px;

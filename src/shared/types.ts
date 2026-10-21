@@ -42,6 +42,9 @@ export interface FolderNode {
   /** Pasta ocultada pelo usuário ("não uso esta pasta") — some da árvore
    *  sem apagar conteúdo; reversível em "Mostrar pastas ocultas". */
   hidden?: boolean;
+  /** IMAP SPECIAL-USE (\Sent, \Trash…) — pasta especial do servidor,
+   *  não pode ser renomeada nem excluída. */
+  specialUse?: string;
 }
 
 /** Categoria colorida estilo Outlook — lista-mestre em categories.json. */
@@ -484,6 +487,8 @@ export interface SyncResult {
   infected?: number;
   /** Mensagens com marcação de spam do servidor movidas para "Lixo eletrônico". */
   junked?: number;
+  /** IMAP sem entrega local: mensagens novas vistas no servidor (só aviso/badge). */
+  newOnServer?: number;
   error?: string;
 }
 

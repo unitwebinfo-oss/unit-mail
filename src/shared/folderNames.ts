@@ -5,6 +5,8 @@
 // "Caixa de Entrada" criada em pt continua "Caixa de Entrada" no disco e
 // aparece como "Inbox" quando a interface está em inglês.
 
+import type { FolderNode } from './types';
+
 export type Lang = 'pt' | 'en';
 
 /** Tipos semânticos de pasta padrão (estilo Outlook). */
@@ -163,4 +165,24 @@ export function resolveFolderName(existingNames: string[], kind: FolderKind, lan
     if (wanted.get(norm(n)) === kind) return n;
   }
   return KINDS[kind][lang];
+}
+
+/**
+ * Módulo Email: remove da árvore as pastas de Calendário/Contatos/Tarefas —
+ * no Outlook elas só aparecem nos módulos próprios, nunca na lista de
+ * pastas de email nem nos seletores de destino de mensagens.
+ */
+const NON_MAIL_CC = new Set(['IPF.Appointment', 'IPF.Contact', 'IPF.Task']);
+const NON_MAIL_KINDS = new Set<FolderKind>(['calendar', 'contacts', 'tasks']);
+export function mailFilterTree(nodes: FolderNode[]): FolderNode[] {
+  const out: FolderNode[] = [];
+  for (const n of nodes) {
+    const kind =
+      folderKindOf(n.archiveName || '') ||
+      folderKindOf(n.id.startsWith('arc:') ? n.id.slice(4).split('/').pop() || '' : '') ||
+      folderKindOf(n.name);
+    if (NON_MAIL_CC.has(n.containerClass) || (kind && NON_MAIL_KINDS.has(kind))) continue;
+    out.push({ ...n, children: mailFilterTree(n.children) });
+  }
+  return out;
 }

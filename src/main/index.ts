@@ -6,6 +6,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync, cpSyn
 import { writeFile } from 'fs/promises';
 import { sourceManager } from './sourceManager';
 import { PstService } from './pstService';
+import { ImapMailSource } from './imapSource';
 import { accountStore, secureStorageAvailable, migrateSecrets } from './accountStore';
 import { sendMail, testAccount, resolveSignatureHtml, composeRawMessage } from './smtpService';
 import { avStatus } from './antivirus';
@@ -238,6 +239,14 @@ async function runSyncAndNotify(): Promise<void> {
         body: `${archived} mensagem(ns) recebida(s) e arquivada(s).`,
       }).show();
     }
+    // IMAP: mensagem nova no servidor (nada foi arquivado localmente).
+    const newOnServer = results.reduce((a, r) => a + (r.newOnServer ?? 0), 0);
+    if (newOnServer > 0 && mainWindow && !mainWindow.isFocused() && Notification.isSupported()) {
+      new Notification({
+        title: 'Novas mensagens',
+        body: `${newOnServer} mensagem(ns) nova(s) no servidor.`,
+      }).show();
+    }
   } catch {
     // erros de rede não devem derrubar o timer
   }
@@ -377,11 +386,13 @@ async function calendarUids(): Promise<Set<string>> {
   if (calUidCache && Date.now() - calUidCache.at < 60_000) return calUidCache.uids;
   const uids = new Set<string>();
   for (const src of sourceManager.listAll()) {
-    const svc = sourceManager.backend(src.id) as import('./pstService').PstService;
-    if (typeof svc.getFolderTree !== 'function' || typeof svc.getItems !== 'function') continue;
+    const svc = sourceManager.backend(src.id);
     let tree: FolderNode[];
     try {
-      tree = svc.getFolderTree();
+      // IMAP returns the tree asynchronously; bases PST/local return it
+      // synchronously. Await funciona nos dois casos e evita passar uma
+      // Promise para calendarFolders quando uma conta IMAP está aberta.
+      tree = await svc.getFolderTree();
     } catch {
       continue;
     }
@@ -635,7 +646,26 @@ async function sendApptInvites(
     // Cópia em Itens Enviados — mesmo fluxo do envio normal de mensagens
     try {
       const raw = await composeRawMessage(account, input);
-      const store = ensureDeliveryStore(account);
+      let copied = false;
+      if (account.protocol === 'imap') {
+        try {
+          const be = sourceManager.backend(`acct:${account.id}`);
+          if (be instanceof ImapMailSource) {
+            const sentPath = await be.specialFolderPath('sent');
+            if (sentPath) {
+              await be.appendItem(sentPath, raw, true);
+              copied = true;
+            }
+          }
+        } catch {
+          // fallback local abaixo
+        }
+      }
+      const store = copied
+        ? ''
+        : account.protocol === 'imap'
+          ? loadSettings().defaultStorePath || ''
+          : ensureDeliveryStore(account);
       if (store) {
         let svc = sourceManager.serviceForPath(store);
         if (!svc) {
@@ -1126,13 +1156,13 @@ function registerIpc(): void {
     return pst.isLocalItem(folderId, index);
   });
 
-  ipcMain.handle('items:delete', (_e, sourceId: string, folderId: string, index: number) => {
+  ipcMain.handle('items:delete', async (_e, sourceId: string, folderId: string, index: number) => {
     const svc = sourceManager.backend(sourceId);
     const pst = svc as import('./pstService').PstService;
     if (typeof pst.deleteItem !== 'function') {
       throw new Error('Excluir só é suportado em arquivos de dados (PST/base local)');
     }
-    pst.deleteItem(folderId, index);
+    await pst.deleteItem(folderId, index);
     return true;
   });
 
@@ -1270,8 +1300,8 @@ function registerIpc(): void {
   ipcMain.handle('folders:empty', (_e, sourceId: string, folderId: string) =>
     sourceManager.emptyFolder(sourceId, folderId),
   );
-  ipcMain.handle('folders:markAllRead', (_e, sourceId: string, folderId: string) => {
-    sourceManager.markAllRead(sourceId, folderId);
+  ipcMain.handle('folders:markAllRead', async (_e, sourceId: string, folderId: string) => {
+    await sourceManager.markAllRead(sourceId, folderId);
     return true;
   });
 
@@ -1692,11 +1722,33 @@ function registerIpc(): void {
           );
         } else if (raw) {
           try {
-            const sentStore = ensureDeliveryStore(account);
-            if (sentStore) {
-              const dir = kindDirFor(sentStore, 'sent');
-              mkdirSync(dir, { recursive: true });
-              writeFileSync(join(dir, `${Date.now()}-${randomUUID().slice(0, 8)}.eml`), raw);
+            let copied = false;
+            // IMAP: a cópia de enviados fica no servidor (pasta \Sent) —
+            // nenhum arquivo local é criado para isso.
+            if (account.protocol === 'imap') {
+              try {
+                const be = sourceManager.backend(`acct:${accountId}`);
+                if (be instanceof ImapMailSource) {
+                  const sentPath = await be.specialFolderPath('sent');
+                  if (sentPath) {
+                    await be.appendItem(sentPath, raw, true);
+                    copied = true;
+                  }
+                }
+              } catch {
+                // servidor inacessível/sem pasta de enviados — cai no local
+              }
+            }
+            if (!copied) {
+              const sentStore =
+                account.protocol === 'imap'
+                  ? loadSettings().defaultStorePath || ''
+                  : ensureDeliveryStore(account);
+              if (sentStore) {
+                const dir = kindDirFor(sentStore, 'sent');
+                mkdirSync(dir, { recursive: true });
+                writeFileSync(join(dir, `${Date.now()}-${randomUUID().slice(0, 8)}.eml`), raw);
+              }
             }
           } catch {
             // ignora falha de cópia local
@@ -1996,8 +2048,8 @@ function registerIpc(): void {
   // Arquivo de dados principal — destino padrão de mensagens sem regra
   ipcMain.handle(
     'items:setRead',
-    (_e, sourceId: string, folderId: string, index: number, read: boolean) => {
-      sourceManager.setItemRead(sourceId, folderId, index, read);
+    async (_e, sourceId: string, folderId: string, index: number, read: boolean) => {
+      await sourceManager.setItemRead(sourceId, folderId, index, read);
       return true;
     },
   );
@@ -2252,6 +2304,22 @@ function registerIpc(): void {
       accountStore.getFull(input.accountId) || accountStore.list().find((a) => a.email);
     if (!account) throw new Error('Configure uma conta para salvar rascunhos');
     const raw = await composeRawMessage(account, { ...input, draft: true });
+    // IMAP: o rascunho fica na pasta Rascunhos do servidor — aparece em
+    // qualquer cliente e não cria arquivo de dados local.
+    if (account.protocol === 'imap') {
+      try {
+        const be = sourceManager.backend(`acct:${input.accountId}`);
+        if (be instanceof ImapMailSource) {
+          const draftsPath = await be.specialFolderPath('drafts');
+          if (draftsPath) {
+            await be.appendItem(draftsPath, raw, true);
+            return true;
+          }
+        }
+      } catch {
+        // servidor inacessível — cai no fallback local abaixo
+      }
+    }
     const store = loadSettings().defaultStorePath || ensureDeliveryStore(account);
     if (!store) throw new Error('Nenhum arquivo de dados disponível para rascunhos');
     let svc = sourceManager.serviceForPath(store);
