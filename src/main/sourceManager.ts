@@ -4,6 +4,7 @@ import { mkdirSync } from 'fs';
 import { PstService } from './pstService';
 import { archiveRootForPst, adoptSidecarForMovedPst } from './paths';
 import { ImapMailSource } from './imapSource';
+import { explainConnError } from './smtpService';
 import { Pop3MailSource } from './pop3Source';
 import { accountStore } from './accountStore';
 import { folderKindOf } from '../shared/folderNames';
@@ -142,7 +143,12 @@ export class SourceManager {
         info.connecting = false;
       } catch (e) {
         info.connecting = false;
-        info.error = (e as Error).message;
+        info.error = explainConnError(e, 'IMAP', {
+          host: account.imapHost,
+          port: account.imapPort,
+          secure: account.imapSecure,
+          user: account.imapUser || account.email,
+        });
       }
     } else {
       info.connecting = false; // POP3 conecta por operação

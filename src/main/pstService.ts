@@ -459,7 +459,7 @@ export class PstService {
       match.contentCount = Math.max(0, (mm._bc ?? 0) - this.hiddenSet(match.id).size) + own.length;
       const ro = this.pstReadOverrideCounts(match.id);
       match.unreadCount =
-        Math.max(0, (mm._bu ?? 0) - this.hiddenSet(match.id).size - ro.read) +
+        Math.max(0, (mm._bu ?? 0) - this.hiddenUnreadCount(match.id) - ro.read) +
         ro.unread +
         own.filter((f) => st.get(`${dirName}/${f}`) !== true).length;
       // Filhos do PST (nunca "arc:") + filhos da sombra mesclados por nome
@@ -525,7 +525,7 @@ export class PstService {
             n.contentCount = Math.max(0, (f.contentCount || 0) - hidden);
             const ro = this.pstReadOverrideCounts(n.id);
             n.unreadCount =
-              Math.max(0, (f.unreadCount || 0) - hidden - ro.read) + ro.unread;
+              Math.max(0, (f.unreadCount || 0) - this.hiddenUnreadCount(n.id) - ro.read) + ro.unread;
           }
         }
         fixPstCounts(n.children);
@@ -768,6 +768,31 @@ export class PstService {
     }
   }
 
+  /**
+   * Quantos itens ocultos têm FLAG de não-lido no PST. O badge de não-lidos
+   * subtrai SÓ esses do baseline — um oculto já lido não pode descontar.
+   * Sem isso, excluir/mover um item já lido (ex.: convite aceito, que vai
+   * para Itens Excluídos após a resposta) derrubava o contador em 1 a mais
+   * a cada operação e o número ficava errado para sempre.
+   */
+  private hiddenUnreadCount(folderId: string): number {
+    const hidden = this.hiddenSet(folderId);
+    if (hidden.size === 0) return 0;
+    const folder = this.folders.get(folderId);
+    if (!folder) return 0;
+    let n = 0;
+    for (const raw of hidden) {
+      try {
+        folder.moveChildCursorTo(raw);
+        const msg = folder.getNextChild();
+        if (msg && !msg.isRead) n++;
+      } catch {
+        // índice fora de faixa — ignora
+      }
+    }
+    return n;
+  }
+
   private hiddenSet(folderId: string): Set<number> {
     return this.loadHidden().get(folderId) ?? new Set();
   }
@@ -915,7 +940,22 @@ export class PstService {
     this.saveHidden();
     this.sumCache.clear();
     const node = this.nodeFor(folderId);
-    if (node) node.contentCount = Math.max(0, (node.contentCount || 0) - 1);
+    if (node) {
+      node.contentCount = Math.max(0, (node.contentCount || 0) - 1);
+      // Ocultou um item efetivamente NÃO-LIDO → o badge desce já aqui,
+      // sem esperar o próximo rebuild da árvore.
+      try {
+        const folder = this.folders.get(folderId);
+        if (folder) {
+          folder.moveChildCursorTo(raw);
+          const msg = folder.getNextChild();
+          const eff = msg ? (this.pstReadOverride(folderId, raw) ?? !!msg.isRead) : true;
+          if (!eff) node.unreadCount = Math.max(0, (node.unreadCount || 0) - 1);
+        }
+      } catch {
+        // falha na leitura do flag — o recount da árvore corrige
+      }
+    }
   }
 
   private loadReadState(): Map<string, boolean> {

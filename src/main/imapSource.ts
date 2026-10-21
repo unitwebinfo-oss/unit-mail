@@ -59,6 +59,8 @@ export class ImapMailSource implements MailBackend {
       auth: { user: account.imapUser || account.email, pass: password },
       logger: false,
       disableAutoIdle: true,
+      // Servidores próprios/hospedagens com certificado autoassinado
+      tls: account.allowSelfSigned ? { rejectUnauthorized: false } : undefined,
     });
   }
 

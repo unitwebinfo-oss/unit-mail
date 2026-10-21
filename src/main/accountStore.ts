@@ -188,6 +188,7 @@ export class AccountStore {
       deliveryFolder: draft.deliveryFolder,
       leaveOnServer: draft.leaveOnServer ?? true,
       leaveDays: draft.leaveDays ?? 0,
+      allowSelfSigned: draft.allowSelfSigned ?? false,
       imapHost: draft.imapHost,
       imapPort: draft.imapPort,
       imapSecure: draft.imapSecure,

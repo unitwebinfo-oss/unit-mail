@@ -70,6 +70,7 @@ export class Pop3MailSource implements MailBackend {
       this.account.imapSecure,
       this.account.imapUser || this.account.email,
       this.password,
+      !!this.account.allowSelfSigned,
     );
     try {
       return await fn(c);
@@ -297,6 +298,7 @@ export class Pop3MailSource implements MailBackend {
       this.account.imapSecure,
       this.account.imapUser || this.account.email,
       this.password,
+      !!this.account.allowSelfSigned,
     );
     return {
       uidl: () => c.uidl(),

@@ -1593,7 +1593,7 @@ function registerIpc(): void {
 
   ipcMain.handle('accounts:test', async (_e, draft: AccountDraft) => {
     try {
-      const message = await testAccount(
+      const { message, imapSecureFix, allowSelfSignedFix } = await testAccount(
         {
           id: draft.id || 'tmp',
           label: draft.label,
@@ -1605,6 +1605,7 @@ function registerIpc(): void {
           deliveryPath: draft.deliveryPath,
           leaveOnServer: draft.leaveOnServer ?? true,
           leaveDays: draft.leaveDays ?? 0,
+          allowSelfSigned: draft.allowSelfSigned,
           imapHost: draft.imapHost,
           imapPort: draft.imapPort,
           imapSecure: draft.imapSecure,
@@ -1620,7 +1621,7 @@ function registerIpc(): void {
           (draft.id ? accountStore.getSmtpPassword(draft.id) : '') ||
           undefined,
       );
-      return { ok: true, message };
+      return { ok: true, message, imapSecureFix, allowSelfSignedFix };
     } catch (e) {
       return { ok: false, message: (e as Error).message };
     }

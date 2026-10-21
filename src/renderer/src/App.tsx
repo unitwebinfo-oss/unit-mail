@@ -275,7 +275,10 @@ export default function App() {
   const itemsComplete = useRef(false);
   /** Ordem real exibida na lista (agrupada/ordenada/filtrada) — alimentada
    *  pela MessageList; usada para achar o "próximo" item visual ao excluir. */
-  const displayedItemsRef = useRef<ItemSummary[]>([]);
+  const displayedItemsRef = useRef<{ key: string; list: ItemSummary[] }>({
+    key: '',
+    list: [],
+  });
 
   /**
    * Baixa a pasta inteira em blocos alimentando a lista e o cache.
@@ -337,10 +340,16 @@ export default function App() {
     setSelected((cur) =>
       cur?.sourceId === sourceId && cur.folder.id === folder.id ? cur : { sourceId, folder },
     );
-    setDetail(null);
-    setDetailRef(null);
-    setSelIndexes(new Set());
-    setSearchResults(null);
+    if (!silent) {
+      // Navegação real de pasta: limpa seleção/detalhe. No reload SILENCIOSO
+      // (mesma pasta, pós-exclusão/sync) preserva — era ele que apagava a
+      // seleção recém-feita e causava a "piscada" ao deletar após trocar
+      // de pasta (qualquer divergência de contagem derrubava o sucessor).
+      setDetail(null);
+      setDetailRef(null);
+      setSelIndexes(new Set());
+      setSearchResults(null);
+    }
     detailCache.current.clear();
     // Lembra a última pasta aberta por módulo (como o Outlook)
     localStorage.setItem(`sel.${moduleRef.current}`, `${sourceId}|${folder.id}`);
@@ -1131,11 +1140,26 @@ export default function App() {
       `${folderId} ${node?.name ?? ''} ${node?.archiveName ?? ''}`,
     );
 
+  /** Exclusões em sequência são serializadas: enquanto uma ainda corre,
+   *  a próxima só é enfileirada. Sem isso, um segundo Delete rápido usava
+   *  o índice do item JÁ APAGADO (detail.index ainda não tinha virado o
+   *  sucessor) e excluía a mensagem errada — e, quando falhava, a seleção
+   *  "travava" e os deletes seguintes não faziam mais nada. */
+  const delBusy = useRef(false);
+  const delAgain = useRef(false);
+  const doDeleteRef = useRef<() => void>(() => {});
+
   /** Exclui os itens de `detailRef` — chamado após a confirmação. */
   const doDeleteItem = useCallback(async () => {
+    doDeleteRef.current = () => void doDeleteItem();
+    if (delBusy.current) {
+      delAgain.current = true;
+      return;
+    }
     if (!detail || !detailRef) return;
     const indexes = targetIndexes();
     if (indexes.length === 0) return;
+    delBusy.current = true;
     // Na lixeira não há "mover para Itens Excluídos" — item local apaga de
     // vez; item gravado no PST não pode ser removido (somente leitura).
     const inTrash = isTrashFolder(
@@ -1154,34 +1178,36 @@ export default function App() {
     // em pastas PST mescladas o index = arcCount + posição bruta, e itens
     // "excluídos" ficam ocultos mantendo buracos na numeração — usar o index
     // como posição pularia itens a cada exclusão.
-    const itemFp = (m: ItemSummary) =>
-      `${m.subject}\u0000${m.senderEmailAddress}\u0000${m.deliveryTime ?? ''}\u0000${m.size ?? ''}`;
-    let nextPos = -1;
-    let nextFp: string | null = null;
+    let nxtItem: ItemSummary | null = null;
     let remaining: ItemSummary[] = [];
     if (inOpenFolder) {
       const gone = new Set(indexes);
       // Sucessor pela ORDEM EXIBIDA (agrupada/ordenada/filtrada) — `items` tem
       // ordem de backend (locais depois PST), que difere da tela e fazia a
-      // seleção pular itens, principalmente nas divisórias de data.
-      const disp = displayedItemsRef.current.length ? displayedItemsRef.current : items;
-      nextPos = disp.findIndex((it) => gone.has(it.index));
+      // seleção pular itens, principalmente nas divisórias de data. O ref só
+      // vale se a chave confere com ESTA pasta — durante a troca de pasta ele
+      // ainda pode refletir a lista anterior e o sucessor sairia errado.
+      const dRef = displayedItemsRef.current;
+      const disp =
+        dRef.list.length && dRef.key === `${detailRef.sourceId}|${detailRef.folderId}`
+          ? dRef.list
+          : items;
+      const nextPos = disp.findIndex((it) => gone.has(it.index));
       const remainingDisp = disp.filter((it) => !gone.has(it.index));
-      const nxt =
+      nxtItem =
         (nextPos >= 0 ? remainingDisp[Math.min(nextPos, remainingDisp.length - 1)] : null) ??
         remainingDisp[0] ??
         null;
-      nextFp = nxt ? itemFp(nxt) : null;
       remaining = items.filter((it) => !gone.has(it.index));
       setItems(remaining);
       setItemCount((c) => Math.max(0, c - indexes.length));
-      if (nxt) {
+      if (nxtItem) {
         // PRÉ-SELECIONA o sucessor já: os índices atuais ainda valem em disco
         // (o IPC ainda não compactou), então o painel troca direto para a
         // mensagem de baixo — sem tela branca ("piscada") entre o delete e
         // a seleção, e o usuário pode ir deletando em sequência.
-        setSelIndexes(new Set([nxt.index]));
-        void selectItem(nxt, detailRef.sourceId, detailRef.folderId);
+        setSelIndexes(new Set([nxtItem.index]));
+        void selectItem(nxtItem, detailRef.sourceId, detailRef.folderId);
       } else {
         setSelIndexes(new Set());
         setDetail(null);
@@ -1221,22 +1247,31 @@ export default function App() {
         const oldArc = items.filter((m) => m.local).length;
         const newArc = remaining.filter((m) => m.local).length;
         let li = 0;
-        const reindexed = remaining.map((m) =>
-          m.local ? { ...m, index: li++ } : { ...m, index: newArc + (m.index - oldArc) },
-        );
+        // Mapa índice antigo → novo: o sucessor escolhido na ordem exibida é
+        // encontrado com exatidão aqui — sem fingerprint (duplicatas de
+        // assunto/remetente/data confundiam o find) e sem usar posição da
+        // ordem visual como posição na ordem de backend (com as divisórias
+        // de data misturando .eml e PST, caía no item errado).
+        const newIdx = new Map<number, number>();
+        const reindexed = remaining.map((m) => {
+          const ni = m.local ? li++ : newArc + (m.index - oldArc);
+          newIdx.set(m.index, ni);
+          return { ...m, index: ni };
+        });
         detailCache.current.clear(); // índices mudaram — cache por índice é inválido
         setItems(reindexed);
-        // Seleciona o sucessor na hora — fingerprint da linha exibida antes
-        // da exclusão (índices antigos já não existem). O detalhe já estava
-        // sendo exibido pela pré-seleção; esta chamada só "firma" o índice
-        // novo e a ordem é garantida pelo selSeq dentro de selectItem.
+        // Seleciona o sucessor na hora — o detalhe já estava sendo exibido
+        // pela pré-seleção; esta chamada só "firma" o índice novo e a ordem
+        // é garantida pelo selSeq dentro de selectItem.
         const next =
-          (nextFp ? reindexed.find((it) => itemFp(it) === nextFp) : undefined) ??
-          (nextPos >= 0 ? reindexed[Math.min(nextPos, reindexed.length - 1)] : undefined) ??
-          reindexed[0];
+          (nxtItem
+            ? reindexed.find((it) => it.index === newIdx.get(nxtItem.index))
+            : undefined) ?? reindexed[0];
         if (next) {
           setSelIndexes(new Set([next.index]));
-          void selectItem(next, sid, fid);
+          // Aguarda o detalhe resolver — só assim detail.index vira o índice
+          // NOVO do sucessor e a exclusão enfileirada (delAgain) mira certo.
+          await selectItem(next, sid, fid);
         }
         // Conferida de segurança: se a contagem divergir do esperado
         // (ex.: algo entregou mensagem no meio da exclusão), um reload
@@ -1250,6 +1285,11 @@ export default function App() {
           })
           .catch(() => {});
       }
+    }
+    delBusy.current = false;
+    if (delAgain.current) {
+      delAgain.current = false;
+      setTimeout(() => void doDeleteRef.current(), 0);
     }
   }, [detail, detailRef, selected, items, loadFolder, refreshSources, targetIndexes, selectItem, folderTrees, lang]);
 
@@ -1928,31 +1968,38 @@ export default function App() {
           detailRef.folderId === selected.folder.id;
         if (inOpen) {
           const gone = detail.index;
-          const itemFp = (m: ItemSummary) =>
-            `${m.subject} ${m.senderEmailAddress} ${m.deliveryTime ?? ''} ${m.size ?? ''}`;
-          const disp = displayedItemsRef.current.length ? displayedItemsRef.current : items;
+          // Ordem exibida só se o ref ainda é desta pasta — durante a
+          // troca de pasta ele pode refletir a lista anterior.
+          const dRef = displayedItemsRef.current;
+          const disp =
+            dRef.list.length && dRef.key === `${detailRef.sourceId}|${detailRef.folderId}`
+              ? dRef.list
+              : items;
           const pos = disp.findIndex((it) => it.index === gone);
           const remainingDisp = disp.filter((it) => it.index !== gone);
-          const nxt =
+          const nxtItem =
             (pos >= 0 ? remainingDisp[Math.min(pos, remainingDisp.length - 1)] : null) ??
             remainingDisp[0] ??
             null;
-          const nextFp = nxt ? itemFp(nxt) : null;
           const remaining = items.filter((it) => it.index !== gone);
           // Reindexação local — o .eml já saiu do disco, posições compactadas
           const oldArc = items.filter((m) => m.local).length;
           const newArc = remaining.filter((m) => m.local).length;
           let li = 0;
-          const reindexed = remaining.map((m) =>
-            m.local ? { ...m, index: li++ } : { ...m, index: newArc + (m.index - oldArc) },
-          );
+          // Mapa índice antigo → novo — sucessor determinístico.
+          const newIdx = new Map<number, number>();
+          const reindexed = remaining.map((m) => {
+            const ni = m.local ? li++ : newArc + (m.index - oldArc);
+            newIdx.set(m.index, ni);
+            return { ...m, index: ni };
+          });
           detailCache.current.clear();
           setItems(reindexed);
           setItemCount((c) => Math.max(0, c - 1));
           const next =
-            (nextFp ? reindexed.find((it) => itemFp(it) === nextFp) : undefined) ??
-            (pos >= 0 ? reindexed[Math.min(pos, reindexed.length - 1)] : undefined) ??
-            reindexed[0];
+            (nxtItem
+              ? reindexed.find((it) => it.index === newIdx.get(nxtItem.index))
+              : undefined) ?? reindexed[0];
           if (next) {
             setSelIndexes(new Set([next.index]));
             void selectItem(next, detailRef.sourceId, detailRef.folderId);
@@ -2079,29 +2126,27 @@ export default function App() {
         selected && selected.sourceId === sourceId && selected.folder.id === folderId;
       // Otimista — mesmo fluxo da exclusão: os itens saem da lista na hora,
       // sem overlay de tela inteira, e a seleção vai para a mensagem seguinte.
-      const itemFp = (m: ItemSummary) =>
-        `${m.subject}\u0000${m.senderEmailAddress}\u0000${m.deliveryTime ?? ''}\u0000${m.size ?? ''}`;
-      let nextPos = -1;
-      let nextFp: string | null = null;
+      let nxtItem: ItemSummary | null = null;
       let remaining: ItemSummary[] = [];
       if (inOpenFolder) {
         const gone = new Set(indexes);
-        const disp = displayedItemsRef.current.length ? displayedItemsRef.current : items;
-        nextPos = disp.findIndex((it) => gone.has(it.index));
+        const dRef = displayedItemsRef.current;
+        const disp =
+          dRef.list.length && dRef.key === `${sourceId}|${folderId}` ? dRef.list : items;
+        const nextPos = disp.findIndex((it) => gone.has(it.index));
         const remainingDisp = disp.filter((it) => !gone.has(it.index));
-        const nxt =
+        nxtItem =
           (nextPos >= 0 ? remainingDisp[Math.min(nextPos, remainingDisp.length - 1)] : null) ??
           remainingDisp[0] ??
           null;
-        nextFp = nxt ? itemFp(nxt) : null;
         remaining = items.filter((it) => !gone.has(it.index));
         setItems(remaining);
         setItemCount((c) => Math.max(0, c - indexes.length));
-        if (nxt) {
+        if (nxtItem) {
           // Pré-seleção do sucessor — mesmo fluxo da exclusão: o painel
           // troca direto para a mensagem seguinte, sem piscar.
-          setSelIndexes(new Set([nxt.index]));
-          void selectItem(nxt, sourceId, folderId);
+          setSelIndexes(new Set([nxtItem.index]));
+          void selectItem(nxtItem, sourceId, folderId);
         } else {
           setSelIndexes(new Set());
           if (detail && detailRef?.sourceId === sourceId && detailRef.folderId === folderId && gone.has(detail.index)) {
@@ -2126,15 +2171,19 @@ export default function App() {
         const oldArc = items.filter((m) => m.local).length;
         const newArc = remaining.filter((m) => m.local).length;
         let li = 0;
-        const reindexed = remaining.map((m) =>
-          m.local ? { ...m, index: li++ } : { ...m, index: newArc + (m.index - oldArc) },
-        );
+        // Mapa índice antigo → novo — sucessor determinístico.
+        const newIdx = new Map<number, number>();
+        const reindexed = remaining.map((m) => {
+          const ni = m.local ? li++ : newArc + (m.index - oldArc);
+          newIdx.set(m.index, ni);
+          return { ...m, index: ni };
+        });
         detailCache.current.clear();
         setItems(reindexed);
         const next =
-          (nextFp ? reindexed.find((it) => itemFp(it) === nextFp) : undefined) ??
-          (nextPos >= 0 ? reindexed[Math.min(nextPos, reindexed.length - 1)] : undefined) ??
-          reindexed[0];
+          (nxtItem
+            ? reindexed.find((it) => it.index === newIdx.get(nxtItem.index))
+            : undefined) ?? reindexed[0];
         if (next) {
           setSelIndexes(new Set([next.index]));
           void selectItem(next, sourceId, folderId);

@@ -47,10 +47,17 @@ export class Pop3Client {
     p?.reject(e);
   }
 
-  async connect(host: string, port: number, secure: boolean, user: string, pass: string): Promise<void> {
+  async connect(
+    host: string,
+    port: number,
+    secure: boolean,
+    user: string,
+    pass: string,
+    allowSelfSigned = false,
+  ): Promise<void> {
     this.socket = await new Promise((resolve, reject) => {
       const sock: net.Socket | tls.TLSSocket = secure
-        ? tls.connect({ host, port, servername: host })
+        ? tls.connect({ host, port, servername: host, rejectUnauthorized: !allowSelfSigned })
         : net.connect({ host, port });
       const onErr = (e: Error) => reject(e);
       sock.once('error', onErr);

@@ -44,9 +44,10 @@ interface MessageListProps {
   noUnreadFilter?: boolean;
   /** Identidade da pasta listada (ex.: `sourceId|folderId`) — o filtro "Não lidos" recongela ao mudar. */
   listKey?: string;
-  /** Recebe a ordem real exibida (agrupada/plana/filtrada) — o App usa para
-   *  achar o "próximo" item visualmente ao excluir. */
-  displayedRef?: { current: ItemSummary[] };
+  /** Recebe a ordem real exibida (agrupada/plana/filtrada) + a chave da pasta
+   *  que a gerou — o App usa para achar o "próximo" item visualmente ao
+   *  excluir, sem confundir com a lista da pasta anterior. */
+  displayedRef?: { current: { key: string; list: ItemSummary[] } };
   /** Lista-mestre de categorias — selos coloridos nas linhas + submenu Categorizar. */
   categories?: MailCategory[];
 }
@@ -554,11 +555,14 @@ export function MessageList({
   // diferente de `items` quando ordenação/busca/agrupamento reorganizam a
   // tela. O App usa para achar o "próximo" item visualmente após excluir.
   if (displayedRef) {
-    displayedRef.current = searching
-      ? (visibleSearch ?? []).map((r) => r.item)
-      : sortKey === 'date'
-        ? flat
-        : visible;
+    displayedRef.current = {
+      key: searching ? `s|${query}` : (listKey ?? ''),
+      list: searching
+        ? (visibleSearch ?? []).map((r) => r.item)
+        : sortKey === 'date'
+          ? flat
+          : visible,
+    };
   }
 
   const OVERSCAN = 12;

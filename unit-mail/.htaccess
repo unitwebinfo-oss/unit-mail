@@ -1,0 +1,10 @@
+# Página única: qualquer caminho em /unit-mail/* cai no index.php
+RewriteEngine On
+RewriteBase /unit-mail/
+
+# Não reescrever arquivos/diretórios reais (assets, cache…)
+RewriteCond %{REQUEST_FILENAME} -f [OR]
+RewriteCond %{REQUEST_FILENAME} -d
+RewriteRule ^ - [L]
+
+RewriteRule ^ index.php [L]

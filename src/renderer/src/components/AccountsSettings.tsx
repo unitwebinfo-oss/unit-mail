@@ -238,6 +238,7 @@ export function AccountsSettings({
   // Remetentes bloqueados — próximas mensagens caem direto no Lixo eletrônico.
   const [blocked, setBlocked] = useState<string[]>([]);
   const [blockedInput, setBlockedInput] = useState('');
+  const [blockedQuery, setBlockedQuery] = useState('');
   const [langPref, setLangPref] = useState<'pt' | 'en'>(getLang());
   const [dataDirPath, setDataDirPath] = useState('');
   const [confirm, setConfirm] = useState<{
@@ -730,6 +731,14 @@ export function AccountsSettings({
     setTestMsg(t('Testando…'));
     try {
       const res = await window.outlook.testAccount(draft);
+      // O teste detectou porta↔SSL invertidos ou certificado autoassinado —
+      // aplica a correção direto no formulário (mensagem já explica).
+      if (res.ok && res.imapSecureFix !== undefined) {
+        setDraft((d) => ({ ...d, imapSecure: res.imapSecureFix === true }));
+      }
+      if (res.ok && res.allowSelfSignedFix) {
+        setDraft((d) => ({ ...d, allowSelfSigned: true }));
+      }
       setTestMsg(res.ok ? `✓ ${res.message}` : `✗ ${res.message}`);
     } finally {
       setBusy(false);
@@ -1519,6 +1528,14 @@ export function AccountsSettings({
                   </select>
                 </Field>
               </div>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, cursor: 'pointer', margin: '4px 0 8px' }}>
+                <input
+                  type="checkbox"
+                  checked={!!draft.allowSelfSigned}
+                  onChange={(e) => setDraft({ ...draft, allowSelfSigned: e.target.checked })}
+                />
+                {t('Aceitar certificado autoassinado (servidor próprio/hospedagem)')}
+              </label>
               {draft.protocol === 'pop3' && (
                 <>
                   <div className="grp-title">{t('Entrega no servidor')}</div>
@@ -2483,8 +2500,19 @@ export function AccountsSettings({
             </div>
           )}
           {blocked.length > 0 && (
+            <input
+              className="inp"
+              style={{ marginBottom: 8 }}
+              placeholder={t('Localizar na lista…')}
+              value={blockedQuery}
+              onChange={(e) => setBlockedQuery(e.target.value)}
+            />
+          )}
+          {blocked.length > 0 && (
             <div className="blocked-list fill-scroll" style={{ maxHeight: 'none' }}>
-              {blocked.map((b) => (
+              {blocked
+                .filter((b) => !blockedQuery.trim() || b.toLowerCase().includes(blockedQuery.trim().toLowerCase()))
+                .map((b) => (
                 <div key={b} className="blocked-row">
                   <span className="blocked-addr">
                     {b.includes('@') ? b : `*@${b}`}
@@ -2499,6 +2527,12 @@ export function AccountsSettings({
                   </button>
                 </div>
               ))}
+              {blockedQuery.trim() !== '' &&
+                !blocked.some((b) => b.toLowerCase().includes(blockedQuery.trim().toLowerCase())) && (
+                  <div className="empty-state" style={{ padding: 12 }}>
+                    {t('Nenhum bloqueado encontrado para esta busca.')}
+                  </div>
+                )}
             </div>
           )}
           {blocked.length > 0 && (

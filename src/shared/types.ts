@@ -309,6 +309,9 @@ export interface AccountConfig {
   leaveOnServer?: boolean;
   /** POP3: remover do servidor após N dias (0 = nunca remover) */
   leaveDays?: number;
+  /** Aceitar certificado TLS autoassinado/não confiável (servidores próprios
+   *  e hospedagens comuns). Vale para entrada (IMAP/POP3) e saída (SMTP). */
+  allowSelfSigned?: boolean;
 }
 
 /** Assinatura nomeada, editável em "Assinaturas" (estilo Arquivo > Opções > Email > Assinaturas) */
@@ -329,6 +332,12 @@ export interface AccountDraft extends Omit<AccountConfig, 'id'> {
 export interface AccountTestResult {
   ok: boolean;
   message: string;
+  /** O teste descobriu a criptografia do servidor de entrada invertida —
+   *  o formulário deve aplicar este valor em `imapSecure`. */
+  imapSecureFix?: boolean;
+  /** O servidor usa certificado autoassinado — só conectou aceitando-o;
+   *  o formulário deve marcar `allowSelfSigned`. */
+  allowSelfSignedFix?: boolean;
 }
 
 /** Palpite extraído do Registro do Windows */
