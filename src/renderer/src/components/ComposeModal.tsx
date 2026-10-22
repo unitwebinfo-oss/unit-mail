@@ -24,6 +24,9 @@ export interface ComposeDraft {
   attachmentPaths?: string[];
   /** Rascunho salvo em disco — excluído de Rascunhos após enviar/regravar. */
   draftRef?: { sourceId: string; folderId: string; index: number };
+  /** Item original respondido/encaminhado — após o envio, o app marca
+   *  \Answered/$Forwarded no servidor (ícone ↩/→ igual ao Outlook). */
+  replyRef?: { sourceId: string; folderId: string; index: number };
 }
 
 interface ComposeModalProps {
@@ -357,6 +360,7 @@ export function ComposeModal({ draft, accounts, onClose, onSent, windowed }: Com
         inReplyTo: draft.inReplyTo,
         references: draft.references,
         attachmentPaths: attachPaths,
+        replyRef: draft.replyRef,
       };
       await window.outlook.sendMail(input);
       // Rascunho enviado → o .eml sai de Rascunhos (como no Outlook)

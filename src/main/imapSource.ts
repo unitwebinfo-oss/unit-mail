@@ -22,10 +22,14 @@ function addrList(list?: Array<{ name?: string; address?: string }>): string {
 
 function structureHasAttachment(node: MessageStructureObject | undefined): boolean {
   if (!node) return false;
+  // Igual ao painel de leitura (que filtra isInline): partes inline —
+  // imagem de assinatura/logo com filename — NÃO são anexo. O clipe só
+  // aparece quando há anexo baixável, como no Outlook.
   const isAttachmentPart =
     node.disposition === 'attachment' ||
-    (node.dispositionParameters && !!node.dispositionParameters.filename) ||
-    (node.parameters && !!node.parameters.name && !node.type?.startsWith('text/'));
+    (node.disposition !== 'inline' &&
+      ((node.dispositionParameters && !!node.dispositionParameters.filename) ||
+        (node.parameters && !!node.parameters.name && !node.type?.startsWith('text/'))));
   if (isAttachmentPart && node.part) return true;
   if (node.childNodes) return node.childNodes.some(structureHasAttachment);
   return false;
@@ -423,6 +427,40 @@ export class ImapMailSource implements MailBackend {
     }) as ListTreeResponse));
   }
 
+  /** Move a pasta para dentro de outra no servidor (reparent via RENAME).
+   *  newParentId null = raiz da caixa. */
+  async moveFolder(folderId: string, newParentId: string | null): Promise<FolderNode[]> {
+    await this.connect();
+    await this.assertMutableFolder(folderId, 'movida');
+    const delim = folderId.includes('/') ? '/' : folderId.includes('.') ? '.' : '/';
+    const sep = folderId.lastIndexOf(delim);
+    const leaf = sep > 0 ? folderId.slice(sep + 1) : folderId;
+    if (
+      newParentId &&
+      (newParentId === folderId || newParentId.startsWith(folderId + delim))
+    ) {
+      throw new Error('Uma pasta não pode ser movida para dentro dela mesma');
+    }
+    const newPath = newParentId ? `${newParentId}${delim}${leaf}` : leaf;
+    await this.client.mailboxRename(folderId, newPath);
+    this.specialCache.clear();
+    return treeToFolderNode((await this.client.listTree({
+      statusQuery: { messages: true, unseen: true },
+    }) as ListTreeResponse));
+  }
+
+  /** Adiciona flags no item do servidor — usado para marcar \Answered/
+   *  $Forwarded na mensagem original após responder/encaminhar. */
+  async addItemFlags(folderId: string, uid: number, flags: string[]): Promise<void> {
+    await this.connect();
+    try {
+      await this.client.mailboxOpen(folderId);
+    } catch {
+      return; // pasta sumiu — marcação é best-effort
+    }
+    await this.client.messageFlagsAdd(String(uid), flags, { uid: true });
+  }
+
   /** Exclui a pasta no servidor com todo o conteúdo. */
   async deleteFolder(folderId: string): Promise<FolderNode[]> {
     await this.connect();
@@ -585,6 +623,8 @@ export class ImapMailSource implements MailBackend {
       deliveryTime: env?.date ? new Date(env.date).toISOString() : null,
       hasAttachments: structureHasAttachment(msg.bodyStructure),
       isRead: flags.has('\\Seen'),
+      isAnswered: flags.has('\\Answered'),
+      isForwarded: flags.has('$Forwarded') || flags.has('\\Forwarded'),
       importance: 0,
       preview: '',
     };

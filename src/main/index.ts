@@ -1211,8 +1211,13 @@ function registerIpc(): void {
 
   ipcMain.handle(
     'folders:move',
-    (_e, sourceId: string, folderId: string, newParentFolderId: string | null) =>
-      sourceManager.moveFolder(sourceId, folderId, newParentFolderId),
+    (
+      _e,
+      sourceId: string,
+      folderId: string,
+      newParentFolderId: string | null,
+      dstSourceId?: string,
+    ) => sourceManager.moveFolder(sourceId, folderId, newParentFolderId, dstSourceId),
   );
 
   ipcMain.handle(
@@ -1713,6 +1718,20 @@ function registerIpc(): void {
     void (async () => {
       try {
         await sendMail(account, password, input, accountStore.getSmtpPassword(accountId));
+        // Marca a mensagem ORIGINAL como respondida/encaminhada no
+        // servidor IMAP (flag \Answered/$Forwarded — o ícone ↩/→ da lista).
+        if (input.replyRef && (input.kind === 'reply' || input.kind === 'forward')) {
+          try {
+            const src = sourceManager.backend(input.replyRef.sourceId);
+            if (src instanceof ImapMailSource) {
+              await src.addItemFlags(input.replyRef.folderId, input.replyRef.index, [
+                input.kind === 'forward' ? '$Forwarded' : '\\Answered',
+              ]);
+            }
+          } catch {
+            // marcação best-effort — não impede o envio
+          }
+        }
         // Sai da Caixa de Saída → Itens Enviados, como no Outlook
         if (svc && outboxFile) {
           svc.moveNamedFile(

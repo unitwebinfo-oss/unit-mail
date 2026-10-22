@@ -220,6 +220,12 @@ function Row({
       <span className="ml-icons">
         {m.inviteMethod && <Icon name="meeting" size={15} color="#0f6cbd" />}
         {m.hasAttachments && <Icon name="clip" size={15} color="#ca5010" />}
+        {/* Marcador estilo Outlook: ↩ roxo = respondida, → azul = encaminhada */}
+        {m.isForwarded ? (
+          <Icon name="forward" size={13} color="#0078d4" />
+        ) : m.isAnswered ? (
+          <Icon name="reply" size={13} color="#8764b8" />
+        ) : null}
         {m.importance === 2 && <Icon name="flag" size={15} color="#d13438" />}
         {(m.categories ?? []).map((id) => {
           const c = catById?.get(id);
@@ -267,23 +273,36 @@ function loadCols(): ColWidths {
 
 /** Linha de pasta dentro do seletor "Mover" — mesmo visual do painel de
  *  pastas (chevron, ícone colorido por tipo, recuo por nível). */
-function MoveFolderRow({
+export function MoveFolderRow({
   node,
   depth,
   sourceId,
   cur,
   onPick,
+  excludeSubtreeId,
 }: {
   node: FolderNode;
   depth: number;
   sourceId: string;
   cur: { sourceId: string; folderId: string };
   onPick: (folderId: string) => void;
+  /** "Mover pasta": a pasta movida e todos os descendentes saem da lista
+   *  (uma pasta nunca pode ser movida para dentro dela mesma). */
+  excludeSubtreeId?: string;
 }) {
   const [open, setOpen] = useState(true);
   // A pasta de origem sai do seletor (mover para si mesma não faz sentido);
   // as subpastas dela continuam disponíveis.
   const isCurrent = cur.sourceId === sourceId && cur.folderId === node.id;
+  if (
+    excludeSubtreeId &&
+    sourceId === cur.sourceId &&
+    (node.id === excludeSubtreeId ||
+      node.id.startsWith(`${excludeSubtreeId}/`) ||
+      node.id.startsWith(`${excludeSubtreeId}.`))
+  ) {
+    return null;
+  }
   const kids = node.children.filter((c) => !c.hidden);
   return (
     <>
@@ -318,6 +337,7 @@ function MoveFolderRow({
             sourceId={sourceId}
             cur={cur}
             onPick={onPick}
+            excludeSubtreeId={excludeSubtreeId}
           />
         ))}
     </>
@@ -325,14 +345,20 @@ function MoveFolderRow({
 }
 
 /** Grupo de uma base (local/PST/conta IMAP) no seletor "Mover". */
-function MoveSourceGroup({
+export function MoveSourceGroup({
   entry,
   cur,
   onPick,
+  excludeSubtreeId,
+  allowRoot,
 }: {
   entry: { source: MailSource; tree: FolderNode[] };
   cur: { sourceId: string; folderId: string };
-  onPick: (sourceId: string, folderId: string) => void;
+  onPick: (sourceId: string, folderId: string | null) => void;
+  /** "Mover pasta": esconde a pasta movida e seus descendentes. */
+  excludeSubtreeId?: string;
+  /** "Mover pasta": mostra a opção de soltar na raiz da base. */
+  allowRoot?: boolean;
 }) {
   const [open, setOpen] = useState(true);
   const tree = mailFilterTree(entry.tree).filter((n) => !n.hidden);
@@ -349,6 +375,20 @@ function MoveSourceGroup({
         </span>
         <span className="f-name">{entry.source.label}</span>
       </div>
+      {open && allowRoot && (
+        <div
+          className="folder-item mv-row"
+          style={{ paddingLeft: 22 }}
+          title={t('Raiz da base')}
+          onClick={() => onPick(entry.source.id, null)}
+        >
+          <span className="chevron" />
+          <span className="f-icon">
+            <Icon name="open" size={14} />
+          </span>
+          <span className="f-name">{t('（raiz da base）')}</span>
+        </div>
+      )}
       {open &&
         tree.map((n) => (
           <MoveFolderRow
@@ -358,6 +398,7 @@ function MoveSourceGroup({
             sourceId={entry.source.id}
             cur={cur}
             onPick={(fid) => onPick(entry.source.id, fid)}
+            excludeSubtreeId={excludeSubtreeId}
           />
         ))}
     </div>
@@ -547,15 +588,19 @@ export function MessageList({
     });
   };
 
-  // Fecha o menu ao clicar fora / Esc
+  // Fecha o menu ao clicar fora / Esc. O 'contextmenu' em CAPTURE fecha o
+  // menu aberto em OUTRO painel (árvore de pastas) antes do novo abrir —
+  // sem isso dois menus de botão direito ficavam na tela ao mesmo tempo.
   React.useEffect(() => {
     if (!msgCtx) return;
     const close = () => setMsgCtx(null);
     const key = (e: KeyboardEvent) => e.key === 'Escape' && close();
     window.addEventListener('click', close);
+    window.addEventListener('contextmenu', close, true);
     window.addEventListener('keydown', key);
     return () => {
       window.removeEventListener('click', close);
+      window.removeEventListener('contextmenu', close, true);
       window.removeEventListener('keydown', key);
     };
   }, [msgCtx]);

@@ -1323,11 +1323,13 @@ export default function App() {
     });
   }, [detail, detailRef, selected, targetIndexes, doDeleteItem, folderTrees]);
   const moveFolder = useCallback(
-    async (sourceId: string, folderId: string, newParentId: string | null) => {
+    async (sourceId: string, folderId: string, newParentId: string | null, destSourceId?: string) => {
       setLoading(t('Movendo pasta…'));
       try {
-        const tree = await window.outlook.moveFolder(sourceId, folderId, newParentId);
-        setFolderTrees((t) => ({ ...t, [sourceId]: tree }));
+        const trees = await window.outlook.moveFolder(sourceId, folderId, newParentId, destSourceId);
+        // O retorno traz a árvore da fonte de origem E da de destino
+        // (mover entre bases altera as duas).
+        setFolderTrees((t) => ({ ...t, ...trees }));
         // A pasta selecionada mudou de id — limpa a seleção se ela estava dentro do que foi movido
         if (
           selected &&
@@ -2039,7 +2041,11 @@ export default function App() {
   };
 
   /** Monta draft de resposta a partir de qualquer ItemDetail (painel ou janela). */
-  const replyDraftOf = (d: ItemDetail, all: boolean): ComposeDraft => {
+  const replyDraftOf = (
+    d: ItemDetail,
+    all: boolean,
+    ref?: { sourceId: string; folderId: string; index: number },
+  ): ComposeDraft => {
     const ours = new Set(
       accounts.map((a) => (a.email || '').toLowerCase()).filter(Boolean),
     );
@@ -2076,29 +2082,36 @@ export default function App() {
       subject: d.subject.toLowerCase().startsWith('re:') ? d.subject : `Re: ${d.subject}`,
       bodyText: '',
       quoteHtml: quoteHtml(d),
+      replyRef: ref,
     };
   };
-  const forwardDraftOf = (d: ItemDetail): ComposeDraft => ({
+  const forwardDraftOf = (
+    d: ItemDetail,
+    ref?: { sourceId: string; folderId: string; index: number },
+  ): ComposeDraft => ({
     accountId: defaultAccountId(),
     kind: 'forward',
     to: '',
     subject: d.subject.toLowerCase().startsWith('fwd:') ? d.subject : `Fwd: ${d.subject}`,
     bodyText: '',
     quoteHtml: quoteHtml(d),
+    replyRef: ref,
   });
 
   const openReply = useCallback(
     (all: boolean) => {
       if (!detail) return;
-      openDraft(replyDraftOf(detail, all));
+      const ref = detailRef ? { ...detailRef, index: detail.index } : undefined;
+      openDraft(replyDraftOf(detail, all, ref));
     },
-    [detail, defaultAccountId],
+    [detail, detailRef, defaultAccountId],
   );
 
   const openForward = useCallback(() => {
     if (!detail) return;
-    openDraft(forwardDraftOf(detail));
-  }, [detail, defaultAccountId]);
+    const ref = detailRef ? { ...detailRef, index: detail.index } : undefined;
+    openDraft(forwardDraftOf(detail, ref));
+  }, [detail, detailRef, defaultAccountId]);
 
   /** Move índices de uma pasta para outra (na mesma base) — usado pelo ctx menu. */
   const moveIndexesTo = useCallback(
@@ -2271,6 +2284,7 @@ export default function App() {
       try {
         if (action === 'reply' || action === 'replyAll' || action === 'forward') {
           const d = await window.outlook.getItem(ctx.sourceId, ctx.folderId, ctx.index);
+          const ref = { sourceId: ctx.sourceId, folderId: ctx.folderId, index: ctx.index };
           if (action === 'forward') {
             openDraft({
               accountId: defaultAccountId(),
@@ -2279,6 +2293,7 @@ export default function App() {
               subject: d.subject.toLowerCase().startsWith('fwd:') ? d.subject : `Fwd: ${d.subject}`,
               bodyText: '',
               quoteHtml: quoteHtml(d),
+              replyRef: ref,
             });
           } else {
             openDraft({
@@ -2289,6 +2304,7 @@ export default function App() {
               subject: d.subject.toLowerCase().startsWith('re:') ? d.subject : `Re: ${d.subject}`,
               bodyText: '',
               quoteHtml: quoteHtml(d),
+              replyRef: ref,
             });
           }
         } else if (action === 'markRead' || action === 'markUnread') {
@@ -2923,19 +2939,43 @@ export default function App() {
               <div className="msg-actions">
                 <button
                   className="btn btn-ghost"
-                  onClick={() => openDraft(replyDraftOf(openMsg.detail, false))}
+                  onClick={() =>
+                    openDraft(
+                      replyDraftOf(openMsg.detail, false, {
+                        sourceId: openMsg.sourceId,
+                        folderId: openMsg.folderId,
+                        index: openMsg.detail.index,
+                      }),
+                    )
+                  }
                 >
                   <Icon name="reply" size={14} /> {t('Responder')}
                 </button>
                 <button
                   className="btn btn-ghost"
-                  onClick={() => openDraft(replyDraftOf(openMsg.detail, true))}
+                  onClick={() =>
+                    openDraft(
+                      replyDraftOf(openMsg.detail, true, {
+                        sourceId: openMsg.sourceId,
+                        folderId: openMsg.folderId,
+                        index: openMsg.detail.index,
+                      }),
+                    )
+                  }
                 >
                   <Icon name="replyAll" size={14} /> {t('Responder a Todos')}
                 </button>
                 <button
                   className="btn btn-ghost"
-                  onClick={() => openDraft(forwardDraftOf(openMsg.detail))}
+                  onClick={() =>
+                    openDraft(
+                      forwardDraftOf(openMsg.detail, {
+                        sourceId: openMsg.sourceId,
+                        folderId: openMsg.folderId,
+                        index: openMsg.detail.index,
+                      }),
+                    )
+                  }
                 >
                   <Icon name="forward" size={14} /> {t('Encaminhar')}
                 </button>

@@ -1,6 +1,6 @@
 {
   "name": "unit-mail",
-  "version": "1.0.7",
+  "version": "1.0.8",
   "productName": "Unit Mail",
   "description": "Cliente de email estilo Outlook 2016 para Linux e Windows com leitura de arquivos PST",
   "license": "GPL-3.0-only",
@@ -56,13 +56,13 @@
     },
     "win": {
       "target": [
-        "portable",
         "nsis"
       ]
     },
     "nsis": {
       "oneClick": false,
-      "allowToChangeInstallationDirectory": true
+      "allowToChangeInstallationDirectory": true,
+      "artifactName": "Unit-Mail-Setup-${version}.${ext}"
     }
   },
   "scripts": {

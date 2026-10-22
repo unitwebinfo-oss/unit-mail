@@ -170,7 +170,14 @@ export interface OutlookApi {
   getItemCategories(sourceId: string, folderId: string, index: number): Promise<string[]>;
   /** Substitui as categorias de vários itens numa chamada (lote). */
   setItemCategories(sourceId: string, folderId: string, indexes: number[], cats: string[]): Promise<boolean>;
-  moveFolder(sourceId: string, folderId: string, newParentFolderId: string | null): Promise<FolderNode[]>;
+  /** Move pasta — mesma base reparenta, outra base copia tudo e exclui a
+   *  origem. Retorna as árvores atualizadas por fonte. */
+  moveFolder(
+    sourceId: string,
+    folderId: string,
+    newParentFolderId: string | null,
+    dstSourceId?: string,
+  ): Promise<Record<string, FolderNode[]>>;
   createFolder(sourceId: string, name: string, parentFolderId: string | null): Promise<FolderNode[]>;
   /** Cria compromisso/contato/tarefa na base — retorna a árvore atualizada
    *  + resumo do envio de convites (compromisso com participantes). */
@@ -410,8 +417,8 @@ const api: OutlookApi = {
     ipcRenderer.invoke('items:getCategories', sourceId, folderId, index),
   setItemCategories: (sourceId, folderId, indexes, cats) =>
     ipcRenderer.invoke('items:setCategories', sourceId, folderId, indexes, cats),
-  moveFolder: (sourceId, folderId, newParentFolderId) =>
-    ipcRenderer.invoke('folders:move', sourceId, folderId, newParentFolderId),
+  moveFolder: (sourceId, folderId, newParentFolderId, dstSourceId) =>
+    ipcRenderer.invoke('folders:move', sourceId, folderId, newParentFolderId, dstSourceId),
   createFolder: (sourceId, name, parentFolderId) =>
     ipcRenderer.invoke('folders:create', sourceId, name, parentFolderId),
   createSpecialItem: (sourceId, item) =>

@@ -1241,7 +1241,12 @@ export class PstService {
       displayCC: '',
       sentTime: parsed.date ? parsed.date.toISOString() : null,
       deliveryTime: parsed.date ? parsed.date.toISOString() : null,
-      hasAttachments: (parsed.attachments || []).length > 0,
+      // Mesmo filtro do painel de leitura: inline-com-cid (logo de
+      // assinatura) não é anexo — sem isso o clipe aparecia à toa.
+      hasAttachments: (parsed.attachments || []).some(
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (a: any) => !(a.contentDisposition === 'inline' && a.contentId),
+      ),
       isRead: true,
       importance: 0,
       size,
@@ -2506,6 +2511,10 @@ export class PstService {
       deliveryTime: toIso(msg.messageDeliveryTime),
       hasAttachments: !!msg.hasAttachments,
       isRead: !!msg.isRead,
+      // PR_LAST_VERB_EXECUTED do Outlook: 102/103 = respondeu, 104-106 =
+      // encaminhou — ícones ↩/→ na lista como no Outlook.
+      isAnswered: msg.lastVerbExecuted === 102 || msg.lastVerbExecuted === 103,
+      isForwarded: msg.lastVerbExecuted === 104 || msg.lastVerbExecuted === 105 || msg.lastVerbExecuted === 106,
       importance: msg.importance || 0,
       size: msg.messageSize || 0,
       preview: (msg.bodyPrefix || '').trim(),

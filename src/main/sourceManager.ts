@@ -307,14 +307,99 @@ export class SourceManager {
     return n;
   }
 
-  /** Move uma pasta local para dentro de outra (reparent). Só pastas graváveis. */
-  moveFolder(sourceId: string, folderId: string, newParentFolderId: string | null): FolderNode[] {
-    const svc = this.backend(sourceId);
-    if (!(svc instanceof PstService)) {
-      throw new Error('Mover pastas só é suportado em arquivos de dados locais');
+  /** Move uma pasta para dentro de outra — local reparenta na base, IMAP
+   *  renomeia o caminho no servidor. Entre bases diferentes copia a pasta
+   *  inteira (itens + subpastas) para o destino e depois exclui a origem.
+   *  newParentId null = raiz. Retorna as árvores atualizadas por fonte. */
+  async moveFolder(
+    sourceId: string,
+    folderId: string,
+    newParentFolderId: string | null,
+    dstSourceId?: string,
+  ): Promise<Record<string, FolderNode[]>> {
+    const src = this.backend(sourceId);
+    const dstId = dstSourceId || sourceId;
+    const dst = this.backend(dstId);
+    // Mesma base: reparent nativo (mover dentro da mesma árvore).
+    if (dst === src) {
+      if (src instanceof ImapMailSource) {
+        return { [sourceId]: await src.moveFolder(folderId, newParentFolderId) };
+      }
+      if (!(src instanceof PstService)) {
+        throw new Error('Mover pastas só é suportado em arquivos de dados locais');
+      }
+      src.moveArchiveFolder(folderId, newParentFolderId);
+      return { [sourceId]: src.getFolderTree() };
     }
-    svc.moveArchiveFolder(folderId, newParentFolderId);
-    return svc.getFolderTree();
+    // Entre bases: copia tudo e só então exclui a origem — sem perda se a
+    // cópia falhar no meio (a pasta original permanece).
+    if (!(dst instanceof ImapMailSource) && !(dst instanceof PstService)) {
+      throw new Error('O destino não aceita pastas');
+    }
+    if (!(src instanceof ImapMailSource) && !(src instanceof PstService)) {
+      throw new Error('Mover pastas só é suportado de arquivos de dados ou IMAP');
+    }
+    const tree = await Promise.resolve(src.getFolderTree());
+    const node = findNodeById(tree, folderId);
+    if (!node) throw new Error('Pasta não encontrada');
+    await this.copyFolderRecursive(src, node, dst, newParentFolderId);
+    if (src instanceof ImapMailSource) await src.deleteFolder(folderId);
+    else (src as PstService).deleteArchiveFolder(folderId);
+    return {
+      [sourceId]: await Promise.resolve(src.getFolderTree()),
+      [dstId]: await Promise.resolve(dst.getFolderTree()),
+    };
+  }
+
+  /** Copia recursiva de pasta entre backends: cria a pasta no destino,
+   *  copia todos os itens (.eml bruto preserva lido/categorias) e repete
+   *  para cada subpasta. Retorna nada — falha aborta antes do delete. */
+  private async copyFolderRecursive(
+    src: MailBackend,
+    node: FolderNode,
+    dst: MailBackend,
+    parentId: string | null,
+  ): Promise<void> {
+    // 1. Cria a pasta no destino e descobre o id novo (procura na árvore
+    //    do pai — mesmo nome pode já existir em outro nível).
+    const findCreated = (tree: FolderNode[]): string | null => {
+      const parentNode = parentId ? findNodeById(tree, parentId) : null;
+      const kids = parentNode ? parentNode.children : tree;
+      return kids.find((n) => n.name === node.name)?.id || null;
+    };
+    let newId: string | null = null;
+    if (dst instanceof ImapMailSource) {
+      newId = findCreated(await dst.createFolder(node.name, parentId));
+    } else if (dst instanceof PstService) {
+      dst.createArchiveFolder(node.name, parentId);
+      newId = findCreated(dst.getFolderTree());
+    }
+    if (!newId) throw new Error(`Não foi possível criar "${node.name}" no destino`);
+    // 2. Copia todos os itens — index IMAP é UID, então usa os índices
+    //    reais do listItems, nunca 0..n-1.
+    const dstImap = dst instanceof ImapMailSource;
+    const items = await Promise.resolve(src.getItems(node.id, 0, 1000000));
+    const copyAll = async () => {
+      for (const it of items) {
+        const wasRead = src.isItemRead ? src.isItemRead(node.id, it.index) : true;
+        const raw = src instanceof ImapMailSource
+          ? await src.downloadRaw(node.id, it.index)
+          : await (src as PstService).exportItemEml(node.id, it.index);
+        if (dstImap) {
+          await (dst as ImapMailSource).appendItem(newId, raw, wasRead ?? true);
+        } else {
+          const fname = await (dst as PstService).importItemEml(newId, raw, wasRead);
+          const cats = (src as PstService).getItemCategories?.(node.id, it.index) ?? [];
+          if (cats.length) (dst as PstService).setItemCategoriesByFile?.(newId, fname, cats);
+        }
+      }
+    };
+    if (dst instanceof PstService) await dst.batch(copyAll);
+    else await copyAll();
+    // 3. Subpastas por último — mesmo processo recursivo.
+    for (const c of node.children) {
+      await this.copyFolderRecursive(src, c, dst, newId);
+    }
   }
 
   /** Cria compromisso/contato/tarefa na base — retorna a árvore atualizada. */

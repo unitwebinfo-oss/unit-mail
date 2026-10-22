@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { Icon } from '../icons';
 import { folderIconKey, containerClassForModule } from '../utils';
-import { ITEM_DRAG_MIME } from './MessageList';
+import { ITEM_DRAG_MIME, MoveSourceGroup } from './MessageList';
 import { isDefaultFolderId } from '../../../shared/types';
 import { folderKindOf, localizeFolderName, mailFilterTree } from '../../../shared/folderNames';
 import { t, useLang, getLang } from '../i18n';
@@ -68,7 +68,7 @@ interface FolderPaneProps {
   onSelect: (sourceId: string, folder: FolderNode) => void;
   onMoveItem?: (payload: ItemDragPayload, destSourceId: string, destFolder: FolderNode) => void;
   /** Pasta arrastada para dentro de outra pasta (ou para a raiz com newParentId=null). */
-  onMoveFolder?: (sourceId: string, folderId: string, newParentId: string | null) => void;
+  onMoveFolder?: (sourceId: string, folderId: string, newParentId: string | null, destSourceId?: string) => void;
   /** Pasta reordenada entre irmãs (position: soltar antes/depois do alvo). */
   onReorderFolder?: (
     sourceId: string,
@@ -128,7 +128,7 @@ function FolderItem({
   showHidden: boolean;
   onSelect: (sourceId: string, f: FolderNode) => void;
   onMoveItem?: (payload: ItemDragPayload, destSourceId: string, destFolder: FolderNode) => void;
-  onMoveFolder?: (sourceId: string, folderId: string, newParentId: string | null) => void;
+  onMoveFolder?: (sourceId: string, folderId: string, newParentId: string | null, destSourceId?: string) => void;
   onReorderFolder?: (
     sourceId: string,
     parentId: string,
@@ -349,17 +349,41 @@ export function FolderPane({
     setCtxValue(node.name);
   };
 
-  // Fecha o menu ao clicar fora / pressionar Esc
+  // Fecha o menu ao clicar fora / pressionar Esc. O 'contextmenu' em
+  // CAPTURE roda ANTES do handler do elemento — assim o menu aberto em
+  // outro painel (lista de mensagens) fecha antes do novo abrir e nunca
+  // existem dois menus de botão direito na tela.
   React.useEffect(() => {
     if (!ctx) return;
     const close = () => setCtx(null);
     const key = (e: KeyboardEvent) => e.key === 'Escape' && close();
     window.addEventListener('click', close);
+    window.addEventListener('contextmenu', close, true);
     window.addEventListener('keydown', key);
     return () => {
       window.removeEventListener('click', close);
+      window.removeEventListener('contextmenu', close, true);
       window.removeEventListener('keydown', key);
     };
+  }, [ctx]);
+
+  // Mesmo clamp do seletor de mensagens — mede o menu e o mantém inteiro
+  // na tela (abrir perto da borda inferior não corta mais a árvore).
+  const ctxMenuRef = React.useRef<HTMLDivElement | null>(null);
+  React.useLayoutEffect(() => {
+    const el = ctxMenuRef.current;
+    if (!ctx || !el) return;
+    const r = el.getBoundingClientRect();
+    const left = Math.min(
+      Math.max(8, ctx.x),
+      Math.max(8, window.innerWidth - r.width - 8),
+    );
+    const top = Math.min(
+      Math.max(8, ctx.y),
+      Math.max(8, window.innerHeight - r.height - 8),
+    );
+    el.style.left = `${left}px`;
+    el.style.top = `${top}px`;
   }, [ctx]);
 
   /** Pastas favoritas resolvidas (nó completo + base) na ordem salva. */
@@ -375,23 +399,8 @@ export function FolderPane({
     }
   }
 
-  /** Lista achatada de pastas da base do menu — destinos para "Mover Pasta". */
-  const moveTargets: Array<{ id: string | null; label: string }> = [];
-  if (ctx?.mode === 'move') {
-    moveTargets.push({ id: null, label: '（raiz da base）' });
-    const entry = entries.find((e) => e.source.id === ctx.sourceId);
-    const flat = (nodes: FolderNode[], depth: number) => {
-      for (const n of nodes) {
-        if (n.id === ctx.node.id || n.id.startsWith(`${ctx.node.id}/`)) continue;
-        moveTargets.push({
-          id: n.id,
-          label: `${'　'.repeat(depth)}${localizeFolderName(n.name, lang)}`,
-        });
-        flat(n.children, depth + 1);
-      }
-    };
-    if (entry) flat(entry.tree, 0);
-  }
+  /** Base da pasta clicada — usada para saber o tipo de fonte (local/IMAP). */
+  const ctxEntry = ctx ? entries.find((e) => e.source.id === ctx.sourceId) : undefined;
 
   const menuStyle: React.CSSProperties = {
     position: 'fixed',
@@ -419,8 +428,8 @@ export function FolderPane({
   );
 
   const isLocal = ctx?.node.id.startsWith('arc:') ?? false;
-  // Fonte da pasta clicada — pasta IMAP também pode renomear/excluir (no servidor).
-  const ctxSource = ctx ? entries.find((e) => e.source.id === ctx.sourceId)?.source : undefined;
+  // Fonte da pasta clicada — pasta IMAP também pode renomear/excluir/mover (no servidor).
+  const ctxSource = ctxEntry?.source;
   const isImap = ctxSource?.kind === 'imap';
   // Pastas padrão (Caixa de Entrada, Itens Excluídos, Calendário…) são
   // protegidas — excluir/renomear/mover quebraria fluxos internos do app.
@@ -659,6 +668,7 @@ export function FolderPane({
         <div
           className="ctx-menu"
           style={menuStyle}
+          ref={ctxMenuRef}
           onClick={(e) => e.stopPropagation()}
           onContextMenu={(e) => e.preventDefault()}
         >
@@ -671,7 +681,7 @@ export function FolderPane({
               })}
               {item(t('Renomear Pasta'), 'draft', () => setCtx({ ...ctx, mode: 'rename' }), (!isLocal && !isImap) || isProtected)}
               {item(t('Copiar Pasta'), 'folder', () => onCopyFolder?.(ctx.sourceId, ctx.node.id), !isLocal)}
-              {item(t('Mover Pasta…'), 'open', () => setCtx({ ...ctx, mode: 'move' }), !isLocal || isProtected)}
+              {item(t('Mover Pasta…'), 'open', () => setCtx({ ...ctx, mode: 'move' }), (!isLocal && !isImap) || isProtected)}
               {/* A confirmação "Tem certeza?" é do próprio app (ConfirmDialog
                   no App) — window.confirm abriria um segundo diálogo nativo. */}
               {item(t('Excluir Pasta'), 'delete', () =>
@@ -761,17 +771,26 @@ export function FolderPane({
               <div className="ctx-move-title">
                 {t('Mover "{nome}" para:', { nome: localizeFolderName(ctx.node.name, lang) })}
               </div>
-              {moveTargets.map((t) => (
-                <button
-                  key={t.id ?? '__root'}
-                  onClick={() => {
-                    setCtx(null);
-                    onMoveFolder?.(ctx.sourceId, ctx.node.id, t.id);
-                  }}
-                >
-                  {t.label}
-                </button>
-              ))}
+              <div className="ctx-move-tree">
+                {/* Igual ao seletor de mensagens: TODAS as bases (locais,
+                    PST e contas IMAP) — mover entre bases copia o conteúdo
+                    e só então exclui a pasta original. */}
+                {entries
+                  .filter((e) => !e.source.hidden)
+                  .map((e) => (
+                    <MoveSourceGroup
+                      key={e.source.id}
+                      entry={e}
+                      cur={{ sourceId: ctx.sourceId, folderId: ctx.node.id }}
+                      excludeSubtreeId={ctx.node.id}
+                      allowRoot
+                      onPick={(sid, fid) => {
+                        setCtx(null);
+                        onMoveFolder?.(ctx.sourceId, ctx.node.id, fid, sid);
+                      }}
+                    />
+                  ))}
+              </div>
               <div className="ctx-sep" />
               <button onClick={() => setCtx(null)}>{t('Cancelar')}</button>
             </div>

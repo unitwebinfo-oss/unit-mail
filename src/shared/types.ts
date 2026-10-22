@@ -119,6 +119,10 @@ export interface ItemSummary {
   apptUid?: string;
   /** Ids de MailCategory aplicados ao item (Categorizar). */
   categories?: string[];
+  /** Mensagem já respondida (IMAP \Answered / PST lastVerb) — ícone ↩ estilo Outlook. */
+  isAnswered?: boolean;
+  /** Mensagem encaminhada (IMAP $Forwarded / PST lastVerb) — ícone → estilo Outlook. */
+  isForwarded?: boolean;
   /** Item .eml da parte local da pasta (sombra/base) — itens do PST ficam indefinidos. */
   local?: boolean;
   /** E-mail da conta que recebeu a mensagem (carimbo X-UM-Account gravado na
@@ -416,6 +420,9 @@ export interface ComposeInput {
   icalEvent?: { method: string; contentBase64: string };
   /** Salvar como rascunho — marca X-Unsent: 1 no .eml gravado. */
   draft?: boolean;
+  /** Item original de uma resposta/encaminhamento — após enviar, o app
+   *  marca \Answered/$Forwarded no servidor (ícone ↩/→ como no Outlook). */
+  replyRef?: { sourceId: string; folderId: string; index: number };
 }
 
 /** Resultado da criação de compromisso/contato/tarefa + envio de convites. */

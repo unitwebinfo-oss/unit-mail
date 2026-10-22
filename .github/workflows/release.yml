@@ -72,8 +72,7 @@ jobs:
 
             | Formato | Uso |
             |---|---|
-            | `Setup.exe` | Instalador — recomendado |
-            | `portable.exe` | Portátil — executar sem instalar |
+            | `Unit-Mail-Setup-*.exe` | Instalador — recomendado |
 
             ### Instalação rápida
 
@@ -86,7 +85,7 @@ jobs:
             ```
 
   windows:
-    name: Windows (NSIS + portable)
+    name: Windows (NSIS Setup)
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -107,7 +106,6 @@ jobs:
         with:
           files: |
             release/*.exe
-            release/*.blockmap
           # Mesmo corpo do job Linux — o primeiro a terminar cria a Release,
           # e sem isso ela poderia nascer sem notas.
           body: |
@@ -129,8 +127,7 @@ jobs:
 
             | Formato | Uso |
             |---|---|
-            | `Setup.exe` | Instalador — recomendado |
-            | `portable.exe` | Portátil — executar sem instalar |
+            | `Unit-Mail-Setup-*.exe` | Instalador — recomendado |
 
             ### Instalação rápida
 
