@@ -125,6 +125,11 @@ export interface ItemSummary {
   isForwarded?: boolean;
   /** Item .eml da parte local da pasta (sombra/base) — itens do PST ficam indefinidos. */
   local?: boolean;
+  /** Identidade estável do item — sobrevive à renumeração de `index` quando a
+   *  pasta recompacta (exclusão/move). .eml: nome do arquivo; PST: posição
+   *  bruta; IMAP: UID. Usado pelo filtro "Não lidas" para não mostrar itens
+   *  errados após reindex. */
+  stableId?: string;
   /** E-mail da conta que recebeu a mensagem (carimbo X-UM-Account gravado na
    *  entrega) — usado pelo "Executar regras" para o filtro por conta. */
   accountEmail?: string;

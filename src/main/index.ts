@@ -214,6 +214,129 @@ function removeOpenLocalStore(path: string): void {
   saveSettings(s);
 }
 
+// ---------- Toast de notificação (substitui a nativa do SO — estilizável) ----------
+const toastWins: BrowserWindow[] = [];
+const TOAST_W = 364;
+const TOAST_H = 96;
+const TOAST_GAP = 10;
+const TOAST_MS = 8000;
+
+function repositionToasts(): void {
+  // Âncora: canto inferior direito da JANELA DO APP (como o aviso do Outlook
+  // que gruda na janela). Se a janela estiver fechada/minimizada, cai pro
+  // canto da tela onde está o cursor.
+  let x: number;
+  let baseY: number;
+  const mw = mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible() && !mainWindow.isMinimized()
+    ? mainWindow.getBounds()
+    : null;
+  if (mw) {
+    x = mw.x + mw.width - TOAST_W - 14;
+    baseY = mw.y + mw.height - TOAST_H - 14;
+  } else {
+    const area = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).workArea;
+    x = area.x + area.width - TOAST_W - 14;
+    baseY = area.y + area.height - TOAST_H - 14;
+  }
+  toastWins.forEach((w, i) => {
+    if (w.isDestroyed()) return;
+    w.setPosition(x, baseY - i * (TOAST_H + TOAST_GAP));
+  });
+}
+
+function esc(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+/** Toast no canto inferior direito, estilo Outlook — clicável (abre a janela). */
+function showToast(kind: 'mail' | 'reminder' | 'warn' | 'error', title: string, body: string): void {
+  try {
+    const dark = nativeTheme.shouldUseDarkColors;
+    const accent = { mail: '#0f6cbd', reminder: '#8764b8', warn: '#b34700', error: '#c50f1f' }[kind];
+    const icon = {
+      mail: '<path d="M4 5h16a1 1 0 011 1v12a1 1 0 01-1 1H4a1 1 0 01-1-1V6a1 1 0 011-1zm8 7.2L4.6 7v11h14.8V7L12 12.2z"/><path d="M4.4 6l7.6 5.7L19.6 6H4.4z" fill="none" stroke="currentColor" stroke-width="1.4"/>',
+      reminder:
+        '<circle cx="12" cy="13" r="7" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M12 9.5V13l2.4 1.6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><path d="M9 4h6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>',
+      warn: '<path d="M12 3.5l9.5 16.5H2.5L12 3.5z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M12 10v4.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><circle cx="12" cy="17.3" r="1.1"/>',
+      error:
+        '<circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M9 9l6 6M15 9l-6 6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>',
+    }[kind];
+    const html = `<!doctype html><html><head><meta charset="utf-8"><style>
+      *{margin:0;box-sizing:border-box}html,body{height:100%;overflow:hidden;background:transparent}
+      body{font-family:'Segoe UI',system-ui,sans-serif}
+      .card{display:flex;align-items:stretch;height:100%;border-radius:10px;overflow:hidden;
+        background:${dark ? '#2b2b2b' : '#ffffff'};color:${dark ? '#eee' : '#1b1b1b'};
+        border:1px solid ${dark ? '#4a4a4a' : '#e0e0e0'};cursor:pointer;
+        box-shadow:0 6px 24px rgba(0,0,0,${dark ? '.55' : '.22'});
+        animation:slide .28s cubic-bezier(.2,.9,.3,1.2)}
+      @keyframes slide{from{transform:translateX(60px);opacity:0}to{transform:none;opacity:1}}
+      .bar{width:5px;flex:none;background:${accent}}
+      .ico{width:40px;display:flex;align-items:center;justify-content:center;flex:none;color:${accent}}
+      .ico svg{width:24px;height:24px}
+      .tx{flex:1;min-width:0;padding:10px 4px 10px 0;display:flex;flex-direction:column;justify-content:center}
+      .cap{font-size:10px;letter-spacing:.8px;text-transform:uppercase;color:${dark ? '#9a9a9a' : '#8a8a8a'}}
+      .ti{font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:1px}
+      .bo{font-size:12px;color:${dark ? '#c8c8c8' : '#5c5c5c'};margin-top:2px;
+        display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+      .x{width:30px;flex:none;display:flex;align-items:flex-start;justify-content:center;
+        color:${dark ? '#9a9a9a' : '#909090'};font-size:15px;padding-top:7px}
+      .x:hover{color:${dark ? '#fff' : '#000'}}
+    </style></head><body>
+      <div class="card" onclick="location.href='um://open'"><div class="bar"></div>
+        <div class="ico"><svg viewBox="0 0 24 24" fill="currentColor">${icon}</svg></div>
+        <div class="tx"><div class="cap">Unit Mail</div><div class="ti">${esc(title)}</div>
+        <div class="bo">${esc(body)}</div></div>
+        <div class="x" onclick="event.stopPropagation();location.href='um://close'">&#10005;</div>
+      </div></body></html>`;
+    const win = new BrowserWindow({
+      width: TOAST_W,
+      height: TOAST_H,
+      frame: false,
+      transparent: true,
+      resizable: false,
+      movable: false,
+      minimizable: false,
+      maximizable: false,
+      fullscreenable: false,
+      alwaysOnTop: true,
+      skipTaskbar: true,
+      focusable: false,
+      show: false,
+      webPreferences: { nodeIntegration: false, contextIsolation: true, sandbox: true },
+    });
+    win.setAlwaysOnTop(true, 'screen-saver');
+    win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+    win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+    win.webContents.on('will-navigate', (e, url) => {
+      e.preventDefault();
+      if (url.startsWith('um://open')) {
+        if (mainWindow) {
+          if (mainWindow.isMinimized()) mainWindow.restore();
+          mainWindow.show();
+          mainWindow.focus();
+        }
+      }
+      if (!win.isDestroyed()) win.close();
+    });
+    toastWins.push(win);
+    win.on('closed', () => {
+      const i = toastWins.indexOf(win);
+      if (i >= 0) toastWins.splice(i, 1);
+      repositionToasts();
+    });
+    void win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
+    win.once('ready-to-show', () => {
+      repositionToasts();
+      win.showInactive();
+    });
+    setTimeout(() => {
+      if (!win.isDestroyed()) win.close();
+    }, TOAST_MS);
+  } catch {
+    if (Notification.isSupported()) new Notification({ title, body }).show();
+  }
+}
+
 // ---------- Enviar/Receber automático ----------
 let syncTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -227,25 +350,20 @@ async function runSyncAndNotify(): Promise<void> {
     mainWindow?.webContents.send('sync:done', results);
     const archived = results.reduce((a, r) => a + r.archived, 0);
     const infected = results.reduce((a, r) => a + (r.infected ?? 0), 0);
-    if (infected > 0 && Notification.isSupported()) {
-      new Notification({
-        title: 'Ameaça detectada em mensagem recebida',
-        body: `${infected} mensagem(ns) movida(s) para a pasta "Itens infectados".`,
-      }).show();
+    if (infected > 0) {
+      showToast(
+        'warn',
+        'Ameaça detectada em mensagem recebida',
+        `${infected} mensagem(ns) movida(s) para a pasta "Itens infectados".`,
+      );
     }
-    if (archived > 0 && mainWindow && !mainWindow.isFocused() && Notification.isSupported()) {
-      new Notification({
-        title: 'Novas mensagens',
-        body: `${archived} mensagem(ns) recebida(s) e arquivada(s).`,
-      }).show();
+    if (archived > 0 && mainWindow && !mainWindow.isFocused()) {
+      showToast('mail', 'Novas mensagens', `${archived} mensagem(ns) recebida(s) e arquivada(s).`);
     }
     // IMAP: mensagem nova no servidor (nada foi arquivado localmente).
     const newOnServer = results.reduce((a, r) => a + (r.newOnServer ?? 0), 0);
-    if (newOnServer > 0 && mainWindow && !mainWindow.isFocused() && Notification.isSupported()) {
-      new Notification({
-        title: 'Novas mensagens',
-        body: `${newOnServer} mensagem(ns) nova(s) no servidor.`,
-      }).show();
+    if (newOnServer > 0 && mainWindow && !mainWindow.isFocused()) {
+      showToast('mail', 'Novas mensagens', `${newOnServer} mensagem(ns) nova(s) no servidor.`);
     }
   } catch {
     // erros de rede não devem derrubar o timer
@@ -472,12 +590,11 @@ async function checkReminders(): Promise<void> {
             lang === 'en' ? 'en-US' : 'pt-BR',
           )}${it.location ? ` — ${it.location}` : ''}`;
           try {
-            if (Notification.isSupported()) {
-              new Notification({
-                title: lang === 'en' ? `Reminder: ${it.subject}` : `Lembrete: ${it.subject}`,
-                body,
-              }).show();
-            }
+            showToast(
+              'reminder',
+              lang === 'en' ? `Reminder: ${it.subject}` : `Lembrete: ${it.subject}`,
+              body,
+            );
           } catch {
             // notificação pode falhar em ambientes sem suporte
           }
@@ -892,6 +1009,11 @@ function createWindow(): BrowserWindow {
   win.on('maximize', queueWinState);
   win.on('unmaximize', queueWinState);
   win.on('close', saveWinState);
+  // Toasts seguem a janela quando ela anda/muda de tamanho
+  win.on('move', repositionToasts);
+  win.on('resize', repositionToasts);
+  win.on('maximize', repositionToasts);
+  win.on('unmaximize', repositionToasts);
 
   mainWindow = win;
   win.on('closed', () => {
@@ -1784,12 +1906,11 @@ function registerIpc(): void {
           subject: input.subject,
           error: msg,
         });
-        if (Notification.isSupported()) {
-          new Notification({
-            title: 'Falha ao enviar mensagem',
-            body: `"${input.subject || '(sem assunto)'}" ficou na Caixa de Saída: ${msg}`,
-          }).show();
-        }
+        showToast(
+          'error',
+          'Falha ao enviar mensagem',
+          `"${input.subject || '(sem assunto)'}" ficou na Caixa de Saída: ${msg}`,
+        );
       }
     })();
     return true;
@@ -2560,6 +2681,16 @@ function registerIpc(): void {
   );
 }
 
+/** Avisa o renderer que uma nova fonte entrou — a árvore recarrega e a
+ *  base aparece assim que termina de abrir (restauração em 2º plano). */
+function notifySourcesChanged(): void {
+  try {
+    mainWindow?.webContents.send('sources:changed');
+  } catch {
+    // janela ainda não criada — ignora
+  }
+}
+
 async function restoreSession(): Promise<void> {
   // Regrava senhas antigas (safeStorage/DPAPI) no formato portátil antes de
   // qualquer uso — depois disso a pasta de dados restaura tudo em outro PC.
@@ -2660,6 +2791,7 @@ async function restoreSession(): Promise<void> {
       if (existsSync(file)) {
         splashStatus(`Abrindo ${basename(file)}…`);
         sourceManager.openPst(file);
+        notifySourcesChanged();
       }
     } catch {
       // arquivo removido/corrompido — ignora na restauração
@@ -2671,6 +2803,7 @@ async function restoreSession(): Promise<void> {
         splashStatus(`Abrindo ${basename(storePath)}…`);
         const def = registerLocalStore(storePath);
         sourceManager.openLocalStore(storePath, def?.name);
+        notifySourcesChanged();
       }
     } catch {
       // base removida — ignora
@@ -2686,6 +2819,7 @@ async function restoreSession(): Promise<void> {
       if (!sourceManager.list().some((s) => s.filePath === found.path)) {
         sourceManager.openLocalStore(found.path, def?.name || found.name);
         addOpenLocalStore(found.path);
+        notifySourcesChanged();
       }
     } catch {
       // base corrompida — ignora
@@ -2707,9 +2841,13 @@ async function restoreSession(): Promise<void> {
   // reabertas — só as que estavam abertas (openLocalStores).
   splashStatus('Conectando contas…');
   for (const acc of accountStore.list()) {
-    sourceManager.openAccount(acc.id).catch(() => {
-      // falha de conexão é reportada via info.error, não derruba o app
-    });
+    sourceManager
+      .openAccount(acc.id)
+      .then(() => notifySourcesChanged())
+      .catch(() => {
+        // falha de conexão é reportada via info.error, não derruba o app
+        notifySourcesChanged();
+      });
   }
 }
 
@@ -2839,23 +2977,27 @@ app.whenReady().then(async () => {
   migrateLegacyUserData();
   nativeTheme.themeSource = loadSettings().theme ?? 'system';
   registerIpc();
-  // Splash primeiro — aparece instantaneamente enquanto as bases abrem
+  // Splash primeiro — aparece instantaneamente enquanto a interface sobe
   createSplash();
   const win = createWindow();
-  splashStatus('Restaurando arquivos de dados…');
-  await restoreSession();
-  // Troca splash → janela principal só quando o renderer está pronto
+  // A janela abre logo que o renderer pinta — NÃO espera as bases. PST
+  // grande levava minutos na splash porque restoreSession() era await;
+  // agora roda em segundo plano e cada base avisa o renderer ao ficar
+  // pronta (evento 'sources:changed'), aparecendo uma a uma na árvore.
   splashStatus('Preparando a interface…');
   await Promise.race([mainWindowReady, new Promise((r) => setTimeout(r, 15000))]);
   if (!win.isDestroyed()) win.show();
   splashWin?.close();
   splashWin = null;
+  void restoreSession().finally(() => {
+    // Enviar/Receber ao abrir (como o Outlook faz) — só depois que as
+    // bases terminaram de restaurar, para não concorrer com a carga.
+    setTimeout(() => {
+      runSyncAndNotify();
+    }, 5000);
+  });
   scheduleAutoSync();
   startReminderTimer();
-  // Enviar/Receber ao abrir (como o Outlook faz) — depois da UI subir
-  setTimeout(() => {
-    runSyncAndNotify();
-  }, 10000);
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       const w = createWindow();

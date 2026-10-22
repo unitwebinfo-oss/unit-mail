@@ -613,6 +613,7 @@ export class ImapMailSource implements MailBackend {
     const flags = msg.flags || new Set<string>();
     return {
       index: msg.uid,
+      stableId: `u|${msg.uid}`,
       messageClass: 'IPM.Note',
       subject: env?.subject || '(sem assunto)',
       senderName: env?.from?.[0]?.name || env?.from?.[0]?.address || '',

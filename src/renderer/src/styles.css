@@ -3050,15 +3050,28 @@ body.dark .badge-local { background: #15321a; color: #6fcf7a; }
 body.dark .badge-warn { background: #3a1a1d; color: #ff8a8a; }
 body.dark .cond-chip-any { background: #3a3018; color: #e6c875; border-color: #5c4a1f; }
 body.dark .rule-card.broken { background: #2a1d1d; }
-body.dark ::-webkit-scrollbar {
-  width: 12px;
+/* ===== Scrollbars finas em todo o app (árvore de pastas, lista de
+   mensagens, painel de leitura, menus) — estilo moderno tipo Outlook web. */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.22);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.38);
+}
+::-webkit-scrollbar-track,
+::-webkit-scrollbar-corner {
+  background: transparent;
 }
 body.dark ::-webkit-scrollbar-thumb {
-  background: #4a4a4a;
-  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.26);
 }
-body.dark ::-webkit-scrollbar-track {
-  background: transparent;
+body.dark ::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.4);
 }
 
 /* ===== Indicador Enviar/Receber na barra de status ===== */

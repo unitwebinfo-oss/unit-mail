@@ -519,6 +519,21 @@ export default function App() {
     window.outlook.getSetupComplete?.().then((done) => {
       if (!done) setShowOnboarding(true);
     });
+    // Bases restauradas em 2º plano pelo main — cada uma notifica ao
+    // ficar pronta; um refresh por leva recarrega a árvore e ela aparece
+    // na hora (antes, o app esperava todas abrirem na splash).
+    let srcTimer: ReturnType<typeof setTimeout> | undefined;
+    const unsubSrc = window.outlook.onSourcesChanged?.(() => {
+      clearTimeout(srcTimer);
+      srcTimer = setTimeout(async () => {
+        const { list, trees } = await refreshSources();
+        // Se ainda não havia pasta selecionada (nenhuma base aberta no
+        // boot), seleciona a padrão agora que as bases chegaram.
+        if (!selectedRef.current) {
+          selectDefaultFolder('mail', list, trees);
+        }
+      }, 250);
+    });
     // Enviar/Receber automático do main → aviso + refresh das pastas
     const unsub = window.outlook.onSyncDone?.((results) => {
       // Sem toast de "mensagens recebidas"/"nenhuma encontrada" — só erro avisa;
@@ -599,7 +614,9 @@ export default function App() {
     const unsubSent2 = window.outlook.onComposeSent?.(() => void refreshOpenFolder());
     return () => {
       clearTimeout(updTimer);
+      clearTimeout(srcTimer);
       unsub?.();
+      unsubSrc?.();
       unsubProg?.();
       unsubCal?.();
       unsubSend?.();
@@ -672,12 +689,18 @@ export default function App() {
         setDetailLoading(true);
         try {
           const d = await window.outlook.getItem(sid, fid, item.index);
-          detailCache.current.set(key, d);
-          if (detailCache.current.size > 400) {
-            const oldest = detailCache.current.keys().next().value;
-            if (oldest !== undefined) detailCache.current.delete(oldest);
+          // Só cacheia se a seleção ainda é a atual — um getItem atrasado
+          // (pré-seleção do sucessor na exclusão) resolve com o índice VELHO
+          // já remapeado para outra mensagem e envenenava o cache: o painel
+          // mostrava "mensagem de outro email" até trocar de pasta.
+          if (seq === selSeq.current) {
+            detailCache.current.set(key, d);
+            if (detailCache.current.size > 400) {
+              const oldest = detailCache.current.keys().next().value;
+              if (oldest !== undefined) detailCache.current.delete(oldest);
+            }
+            setDetail(d);
           }
-          if (seq === selSeq.current) setDetail(d);
         } catch (e) {
           if (seq === selSeq.current)
             setError(t('Erro ao ler item: {msg}', { msg: (e as Error).message }));
@@ -686,8 +709,10 @@ export default function App() {
         }
       }
       // Abrir marca como lida (backend já persistiu) — reflete na lista na
-      // hora e no badge da pasta em background (rebuild da árvore é pesado)
-      if (!item.isRead) {
+      // hora e no badge da pasta em background (rebuild da árvore é pesado).
+      // Só para a seleção atual: chamada atrasada decrementaria o badge e
+      // marcaria lido o item ERRADO (o índice já remapeou para outro).
+      if (!item.isRead && seq === selSeq.current) {
         setItems((prev) =>
           prev.map((it) => (it.index === item.index ? { ...it, isRead: true } : it)),
         );
@@ -1273,15 +1298,22 @@ export default function App() {
           // NOVO do sucessor e a exclusão enfileirada (delAgain) mira certo.
           await selectItem(next, sid, fid);
         }
-        // Conferida de segurança: se a contagem divergir do esperado
+        // Conferida de segurança: se a contagem TOTAL divergir do esperado
         // (ex.: algo entregou mensagem no meio da exclusão), um reload
-        // silencioso corrige os índices sem piscar a lista.
+        // silencioso corrige os índices sem piscar a lista. Compara com o
+        // total esperado — `reindexed` é só a página carregada, não a pasta
+        // inteira (comparar com ela disparava reload a cada exclusão e,
+        // se o usuário já tivesse trocado de pasta, sobrescrevia a view).
+        const expectedTotal = Math.max(0, itemCount - indexes.length);
         void window.outlook
           .getItemCount(sid, fid)
           .then((cnt) => {
-            if (cnt === reindexed.length) return;
+            if (cnt === expectedTotal) return;
             itemsCache.current.delete(`${sid}|${fid}`);
-            void loadFolder(sid, selected.folder, true);
+            const cur = selectedRef.current;
+            if (cur && cur.sourceId === sid && cur.folder.id === fid) {
+              void loadFolder(sid, cur.folder, true);
+            }
           })
           .catch(() => {});
       }
@@ -1291,7 +1323,7 @@ export default function App() {
       delAgain.current = false;
       setTimeout(() => void doDeleteRef.current(), 0);
     }
-  }, [detail, detailRef, selected, items, loadFolder, refreshSources, targetIndexes, selectItem, folderTrees, lang]);
+  }, [detail, detailRef, selected, items, itemCount, loadFolder, refreshSources, targetIndexes, selectItem, folderTrees, lang]);
 
   /**
    * Exclui a(s) mensagem(ns) selecionada(s). Fora da lixeira move direto para

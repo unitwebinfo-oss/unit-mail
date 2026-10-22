@@ -216,6 +216,9 @@ export interface OutlookApi {
   }): Promise<{ sent: boolean }>;
   /** Evento do Enviar/Receber automático/manual do main — retorna unsubscribe. */
   onSyncDone(cb: (results: SyncResult[]) => void): () => void;
+  /** Uma base/fonte terminou de abrir na restauração em 2º plano —
+   *  o renderer recarrega a árvore. Retorna unsubscribe. */
+  onSourcesChanged(cb: () => void): () => void;
   /** Progresso por tarefa do Enviar/Receber — retorna unsubscribe. */
   onSyncProgress(cb: (ev: SyncProgress) => void): () => void;
   /** "Cancelar tudo" no diálogo de progresso. */
@@ -445,6 +448,11 @@ const api: OutlookApi = {
     const listener = (_e: unknown, results: SyncResult[]) => cb(results);
     ipcRenderer.on('sync:done', listener);
     return () => ipcRenderer.removeListener('sync:done', listener);
+  },
+  onSourcesChanged: (cb) => {
+    const listener = () => cb();
+    ipcRenderer.on('sources:changed', listener);
+    return () => ipcRenderer.removeListener('sources:changed', listener);
   },
   onSyncProgress: (cb) => {
     const listener = (_e: unknown, ev: SyncProgress) => cb(ev);

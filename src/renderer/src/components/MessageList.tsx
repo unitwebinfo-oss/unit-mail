@@ -619,12 +619,17 @@ export function MessageList({
       frozenScope.current = filterScope;
       unreadFrozen.current = new Set();
     }
-    // Alimenta com os não-lidos atuais — itens novos entram, lidos continuam
+    // Alimenta com os não-lidos atuais — itens novos entram, lidos continuam.
+    // A chave é o stableId (UID/.eml/posição bruta): o `index` muda quando a
+    // pasta recompacta após exclusão — por index, uma mensagem LIDA herdaria
+    // o índice congelado e "apareceria do nada" na aba Não lidas.
     if (searching) {
       for (const r of searchResults!)
-        if (!r.item.isRead) unreadFrozen.current.add(`${r.folderId}|${r.item.index}`);
+        if (!r.item.isRead)
+          unreadFrozen.current.add(`${r.folderId}|${r.item.stableId ?? r.item.index}`);
     } else {
-      for (const m of items) if (!m.isRead) unreadFrozen.current.add(String(m.index));
+      for (const m of items)
+        if (!m.isRead) unreadFrozen.current.add(m.stableId ?? String(m.index));
     }
   }
   wasUnreadOnly.current = wantUnread;
@@ -644,7 +649,8 @@ export function MessageList({
     () =>
       sorted.filter(
         (m) =>
-          (!wantUnread || unreadFrozen.current.has(String(m.index))) && catMatch(m.categories),
+          (!wantUnread || unreadFrozen.current.has(m.stableId ?? String(m.index))) &&
+          catMatch(m.categories),
       ),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [sorted, wantUnread, catMatch],
@@ -654,7 +660,8 @@ export function MessageList({
       searching
         ? searchResults!.filter(
             (r) =>
-              (!wantUnread || unreadFrozen.current.has(`${r.folderId}|${r.item.index}`)) &&
+              (!wantUnread ||
+                unreadFrozen.current.has(`${r.folderId}|${r.item.stableId ?? r.item.index}`)) &&
               catMatch(r.item.categories),
           )
         : searchResults,

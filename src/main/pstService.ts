@@ -1016,9 +1016,13 @@ export class PstService {
     }
   }
 
-  /** Chave do estado de leitura: "<arcId>/<arquivo>". */
+  /** Chave do estado de leitura: "<arcId>/<arquivo>" — sempre com o caminho
+   *  de sombra CANÔNICO (canonShadow), senão gravar por um id não-canônico
+   *  (ex.: pasta renomeada/consolidada) criaria estado órfão e a árvore —
+   *  que conta pelo caminho real do diretório — mostraria não-lidos
+   *  fantasma que nenhum "marcar tudo como lido" apaga. */
   private readKey(arcId: string, file: string): string {
-    return `${arcId.slice(4)}/${file}`;
+    return `${this.canonShadow(arcId.slice(4))}/${file}`;
   }
 
   private isReadFile(arcId: string, file: string): boolean {
@@ -1209,6 +1213,7 @@ export class PstService {
           isRead: this.isReadFile(folderId, files[i]),
           categories: this.catsOfKey(`a|${rel}/${files[i]}`),
           local: true,
+          stableId: `a|${this.canonShadow(rel)}/${files[i]}`,
         });
       } catch {
         // arquivo corrompido — pula
@@ -1460,6 +1465,7 @@ export class PstService {
         const ov = this.pstReadOverride(folderId, i);
         if (ov !== undefined) s.isRead = ov;
         s.categories = this.catsOfKey(`p|${folderId}|${i}`);
+        s.stableId = `p|${folderId}|${i}`; // posição bruta — estável entre reindex
         s.index = arcCount + i; // desloca para o espaço mesclado
         pstItems.push(s);
       }
