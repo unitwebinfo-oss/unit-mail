@@ -133,6 +133,11 @@ export interface OutlookApi {
   ensureDefaultStore(): Promise<MailSource | null>;
   /** Reinicia o app (marca setup como concluído — usado ao adotar um perfil). */
   restartApp(): Promise<void>;
+  /** Estado do perfil: ponteiro gravado? pasta configurada está acessível
+   *  neste momento? (drive removível pode ainda não ter montado no boot). */
+  getProfileStatus(): Promise<{ hasPointer: boolean; target: string | null; available: boolean }>;
+  /** O main avisa quando a pasta de dados configurada está ausente no boot. */
+  onProfileMissing(cb: (dir: string) => void): () => void;
   /** Caminho do arquivo de dados principal ('' = nenhum). */
   getDefaultStore(): Promise<string>;
   setDefaultStore(path: string): Promise<string>;
@@ -536,6 +541,12 @@ const api: OutlookApi = {
   applyDataDir: (dir) => ipcRenderer.invoke('app:applyDataDir', dir),
   ensureDefaultStore: () => ipcRenderer.invoke('app:ensureDefaultStore'),
   restartApp: () => ipcRenderer.invoke('app:restart'),
+  getProfileStatus: () => ipcRenderer.invoke('app:profileStatus'),
+  onProfileMissing: (cb) => {
+    const listener = (_e: unknown, dir: string) => cb(dir);
+    ipcRenderer.on('profile:missing', listener);
+    return () => ipcRenderer.removeListener('profile:missing', listener);
+  },
 
   getFolderTree: (sourceId) => ipcRenderer.invoke('mail:folderTree', sourceId),
   getItemCount: (sourceId, folderId) => ipcRenderer.invoke('mail:itemCount', sourceId, folderId),

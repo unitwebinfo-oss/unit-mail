@@ -102,6 +102,20 @@ export function profilePointerExists(): boolean {
   return existsSync(pointerPath());
 }
 
+/** Caminho gravado no ponteiro do perfil — SEM o fallback para o padrão.
+ *  null = ponteiro inexistente/inválido. Usado para detectar a pasta de
+ *  dados configurada mas temporariamente ausente (drive removível que só
+ *  monta sob demanda). */
+export function profilePointerTarget(): string | null {
+  try {
+    const p = JSON.parse(readFileSync(pointerPath(), 'utf-8'));
+    const d = p?.dataDir;
+    return typeof d === 'string' && d ? d : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Esta pasta já é um perfil Unit Mail? (tem marcador ou dados nossos) */
 export function isUnitMailProfile(dir: string): boolean {
   return (

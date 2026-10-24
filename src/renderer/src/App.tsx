@@ -156,6 +156,9 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [settingsInitTab, setSettingsInitTab] = useState<SettingsTab>('email');
   const [showOnboarding, setShowOnboarding] = useState(false);
+  /** Pasta de dados configurada ausente no boot (ex.: drive removível não
+   *  montado) — o main não restaura nada; este modal cobre a janela. */
+  const [profileMissing, setProfileMissing] = useState<string | null>(null);
 
   /** Diálogo "Novos Itens" — compromisso, contato ou tarefa. */
   const [newItemKind, setNewItemKind] = useState<'appt' | 'contact' | 'task' | null>(null);
@@ -519,6 +522,13 @@ export default function App() {
     window.outlook.getSetupComplete?.().then((done) => {
       if (!done) setShowOnboarding(true);
     });
+    // Pasta de dados configurada num caminho que não existe agora (drive
+    // removível não montado na abertura, pasta renomeada/apagada). Nada é
+    // restaurado nem sincronizado nesse estado — só o aviso bloqueante.
+    window.outlook.getProfileStatus?.().then((ps) => {
+      if (ps?.hasPointer && !ps.available) setProfileMissing(ps.target);
+    });
+    const unsubProfile = window.outlook.onProfileMissing?.((dir) => setProfileMissing(dir));
     // Bases restauradas em 2º plano pelo main — cada uma notifica ao
     // ficar pronta; um refresh por leva recarrega a árvore e ela aparece
     // na hora (antes, o app esperava todas abrirem na splash).
@@ -616,6 +626,7 @@ export default function App() {
       clearTimeout(updTimer);
       clearTimeout(srcTimer);
       unsub?.();
+      unsubProfile?.();
       unsubSrc?.();
       unsubProg?.();
       unsubCal?.();
@@ -3096,6 +3107,57 @@ export default function App() {
             setShowCatsDlg(false);
           }}
         />
+      )}
+      {profileMissing && (
+        <div className="modal-overlay" style={{ zIndex: 250 }}>
+          <div className="confirm-dialog" style={{ maxWidth: 460 }}>
+            <div className="confirm-title">
+              <Icon name="junk" size={18} />
+              <span>{t('Pasta de dados não encontrada')}</span>
+            </div>
+            <div className="confirm-msg">
+              {t('A pasta configurada não está acessível agora — se ela está num drive externo/removível, conecte-o ou aguarde a montagem e tente de novo. Nada foi alterado ou sincronizado.')}
+            </div>
+            <div
+              className="confirm-msg"
+              style={{
+                fontFamily: 'monospace',
+                fontSize: 11,
+                wordBreak: 'break-all',
+                background: 'var(--surface-mid)',
+                border: '1px solid var(--border)',
+                borderRadius: 6,
+                padding: '6px 8px',
+                marginTop: 4,
+              }}
+            >
+              {profileMissing}
+            </div>
+            <div className="confirm-actions">
+              <button
+                className="ghost-btn"
+                onClick={async () => {
+                  const res = await window.outlook.pickDataDirPath?.();
+                  if (!res) return;
+                  await window.outlook.applyDataDir?.(res.dir);
+                  await window.outlook.restartApp?.();
+                }}
+              >
+                {t('Escolher outra pasta…')}
+              </button>
+              <button
+                className="btn btn-primary"
+                onClick={async () => {
+                  const ps = await window.outlook.getProfileStatus?.();
+                  if (ps?.available) await window.outlook.restartApp?.();
+                }}
+                autoFocus
+              >
+                {t('Tentar novamente')}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
       {showOnboarding && (
         <OnboardingWizard

@@ -665,6 +665,11 @@ const EN: Record<string, string> = {
   '{sel} de {tot} pasta(s)': '{sel} of {tot} folder(s)',
   'Marcar uma pasta inclui as subpastas dela. Mensagens já existentes no destino não são duplicadas.':
     'Checking a folder includes its subfolders. Messages already in the destination are not duplicated.',
+  'Pasta de dados não encontrada': 'Data folder not found',
+  'A pasta configurada não está acessível agora — se ela está num drive externo/removível, conecte-o ou aguarde a montagem e tente de novo. Nada foi alterado ou sincronizado.':
+    'The configured folder is not accessible right now — if it lives on an external/removable drive, plug it in or wait for it to mount and try again. Nothing was changed or synced.',
+  'Escolher outra pasta…': 'Choose another folder…',
+  'Tentar novamente': 'Try again',
   'O PST original': 'The original PST',
   'não é alterado nem apagado': 'is not changed nor deleted',
   ' só foi aberto para ler os dados e será fechado ao final; o arquivo continua no disco igual estava.':

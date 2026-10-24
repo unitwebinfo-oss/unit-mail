@@ -15,7 +15,7 @@ import { recordRecipients, searchContacts } from './contactHistory';
 import { ruleEngine, ensureDeliveryStore, folderDirFor, kindDirFor, resolveStoreFolderName } from './ruleEngine';
 import { signatureStore } from './signatureStore';
 import { createLocalStore, deleteLocalStore, isLocalStorePath, listLocalStores, registerLocalStore, remapLocalStorePath, renameLocalStore, unregisterLocalStore } from './localStore';
-import { dataDir, mailRoot, mailRootPath, setDataDir, isUnitMailProfile, scanMailDir, profilePointerExists } from './dataDir';
+import { dataDir, mailRoot, mailRootPath, setDataDir, isUnitMailProfile, scanMailDir, profilePointerExists, profilePointerTarget } from './dataDir';
 import { appLanguage } from './language';
 import { log } from './logger';
 import { migratePstToLocalStore } from './pstImport';
@@ -1164,6 +1164,15 @@ function registerIpc(): void {
 
   // ---------- Pasta de dados (perfil portátil — modelo Thunderbird) ----------
   ipcMain.handle('app:getDataDir', () => dataDir());
+
+  // Estado do perfil configurado: o ponteiro pode apontar para uma pasta
+  // temporariamente ausente — ex.: drive removível (/run/media/…) que só
+  // monta sob demanda. O renderer usa isso para mostrar o aviso "pasta de
+  // dados não encontrada" em vez de abrir vazio num perfil fantasma.
+  ipcMain.handle('app:profileStatus', () => {
+    const target = profilePointerTarget();
+    return { hasPointer: !!target, target, available: !!target && existsSync(target) };
+  });
 
   // Passo 1: só abre o seletor e informa se a pasta já é um perfil —
   // NADA é gravado. A escolha só é aplicada em app:applyDataDir.
@@ -3014,15 +3023,29 @@ app.whenReady().then(async () => {
   if (!win.isDestroyed()) win.show();
   splashWin?.close();
   splashWin = null;
-  void restoreSession().finally(() => {
-    // Enviar/Receber ao abrir (como o Outlook faz) — só depois que as
-    // bases terminaram de restaurar, para não concorrer com a carga.
-    setTimeout(() => {
-      runSyncAndNotify();
-    }, 5000);
-  });
-  scheduleAutoSync();
-  startReminderTimer();
+  // Ponteiro para pasta de dados que não existe AGORA (drive removível ainda
+  // não montado, pasta renomeada): NÃO restaura bases nem roda sync — cada
+  // gravação iria para o fallback "Documents/Unit Mail", um perfil fantasma
+  // que ainda por cima parecia "perder" os dados do usuário. O renderer
+  // mostra o aviso com "Tentar novamente"/"Escolher outra pasta".
+  {
+    const missing = profilePointerTarget();
+    if (missing && !existsSync(missing)) {
+      void mainWindowReady.then(() => {
+        if (!win.isDestroyed()) win.webContents.send('profile:missing', missing);
+      });
+    } else {
+      void restoreSession().finally(() => {
+        // Enviar/Receber ao abrir (como o Outlook faz) — só depois que as
+        // bases terminaram de restaurar, para não concorrer com a carga.
+        setTimeout(() => {
+          runSyncAndNotify();
+        }, 5000);
+      });
+      scheduleAutoSync();
+      startReminderTimer();
+    }
+  }
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       const w = createWindow();
