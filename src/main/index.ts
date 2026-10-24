@@ -15,7 +15,7 @@ import { recordRecipients, searchContacts } from './contactHistory';
 import { ruleEngine, ensureDeliveryStore, folderDirFor, kindDirFor, resolveStoreFolderName } from './ruleEngine';
 import { signatureStore } from './signatureStore';
 import { createLocalStore, deleteLocalStore, isLocalStorePath, listLocalStores, registerLocalStore, remapLocalStorePath, renameLocalStore, unregisterLocalStore } from './localStore';
-import { dataDir, mailRoot, mailRootPath, setDataDir, isUnitMailProfile, scanMailDir } from './dataDir';
+import { dataDir, mailRoot, mailRootPath, setDataDir, isUnitMailProfile, scanMailDir, profilePointerExists } from './dataDir';
 import { appLanguage } from './language';
 import { log } from './logger';
 import { migratePstToLocalStore } from './pstImport';
@@ -1651,7 +1651,7 @@ function registerIpc(): void {
   // depois disso, excluir apaga de verdade e o PST original fica intocado.
   ipcMain.handle(
     'stores:migratePst',
-    async (_e, sourceId: string, destParentDir: string, name: string, existingStorePath?: string) => {
+    async (_e, sourceId: string, destParentDir: string, name: string, existingStorePath?: string, folderIds?: string[]) => {
       const info = await migratePstToLocalStore(
         sourceId,
         destParentDir || mailRoot(),
@@ -1660,6 +1660,7 @@ function registerIpc(): void {
           mainWindow?.webContents.send('migrate:progress', p);
         },
         existingStorePath,
+        folderIds ? new Set(folderIds) : undefined,
       );
       addOpenLocalStore(info.filePath!);
       return info;
@@ -2156,7 +2157,31 @@ function registerIpc(): void {
   });
   ipcMain.handle('settings:getSyncInterval', () => loadSettings().syncIntervalMin ?? 30);
   ipcMain.handle('settings:getLoadImages', () => loadSettings().loadRemoteImages ?? false);
-  ipcMain.handle('settings:getSetupComplete', () => loadSettings().setupComplete ?? false);
+  ipcMain.handle('settings:getSetupComplete', () => {
+    const s = loadSettings();
+    if (s.setupComplete) return true;
+    // O wizard de primeira execução não faz sentido quando o perfil já está
+    // de pé: ponteiro gravado (pasta de dados já escolhida uma vez — cobre
+    // quem fechou o app no meio do wizard, para quem a tela reaparecia a
+    // cada abertura), conta configurada ou base registrada (perfil
+    // restaurado de outro PC ou configurado direto em Configurações).
+    const done =
+      profilePointerExists() ||
+      accountStore.list().length > 0 ||
+      s.openPstFiles.length > 0 ||
+      s.openLocalStores.length > 0 ||
+      listLocalStores().length > 0;
+    if (done) {
+      // Persiste só quando a pasta de dados existe de fato — ponteiro com a
+      // pasta temporariamente ausente (drive desmontado) não deve criar um
+      // diretório fantasma ao gravar o settings.json.
+      if (existsSync(dataDir())) {
+        s.setupComplete = true;
+        saveSettings(s);
+      }
+    }
+    return done;
+  });
   ipcMain.handle('settings:setSetupComplete', (_e, v: boolean) => {
     const s = loadSettings();
     s.setupComplete = !!v;

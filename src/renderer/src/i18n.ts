@@ -656,8 +656,15 @@ const EN: Record<string, string> = {
   // ---- Modal: migrar/importar PST ----
   'Importar arquivo .pst': 'Import .pst file',
   'Migrar para base própria': 'Migrate to native store',
-  'Copia TODAS as pastas e mensagens do PST para uma base nova, 100% do Unit Mail — sem a limitação de "somente leitura" do formato .pst. Nessa base, excluir apaga o arquivo de verdade e libera espaço em disco de imediato.':
-    'Copies ALL folders and messages from the PST into a new 100% Unit Mail store — without the .pst read-only limitation. There, deleting really deletes files and frees disk space immediately.',
+  'Copia as pastas e mensagens do PST para uma base 100% do Unit Mail — sem a limitação de "somente leitura" do formato .pst. Nessa base, excluir apaga o arquivo de verdade e libera espaço em disco de imediato. Escolha abaixo quais pastas importar (padrão: todas).':
+    'Copies the PST folders and messages into a 100% Unit Mail store — without the .pst read-only limitation. There, deleting really deletes files and frees disk space immediately. Pick which folders to import below (default: all).',
+  'Pastas a importar': 'Folders to import',
+  'Carregando pastas…': 'Loading folders…',
+  'Nenhuma pasta encontrada neste arquivo.': 'No folders found in this file.',
+  'Nenhuma': 'None',
+  '{sel} de {tot} pasta(s)': '{sel} of {tot} folder(s)',
+  'Marcar uma pasta inclui as subpastas dela. Mensagens já existentes no destino não são duplicadas.':
+    'Checking a folder includes its subfolders. Messages already in the destination are not duplicated.',
   'O PST original': 'The original PST',
   'não é alterado nem apagado': 'is not changed nor deleted',
   ' só foi aberto para ler os dados e será fechado ao final; o arquivo continua no disco igual estava.':

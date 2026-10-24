@@ -95,6 +95,13 @@ export function profileEstablished(): boolean {
   return existsSync(pointerPath()) || existsSync(dataDir());
 }
 
+/** O ponteiro do perfil já foi gravado? Significa que a pasta de dados já
+ *  foi escolhida alguma vez — o setup inicial já passou por aqui, mesmo que
+ *  a pasta esteja temporariamente indisponível (drive desmontado). */
+export function profilePointerExists(): boolean {
+  return existsSync(pointerPath());
+}
+
 /** Esta pasta já é um perfil Unit Mail? (tem marcador ou dados nossos) */
 export function isUnitMailProfile(dir: string): boolean {
   return (

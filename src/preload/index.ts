@@ -75,8 +75,9 @@ export interface OutlookApi {
   /** Abre o seletor para o usuário escolher a pasta-pai da nova base local. */
   pickStoreDir(): Promise<string | null>;
   /** Migra todo o conteúdo de um PST/base para uma base nativa do app (.eml).
-   *  existingStorePath: importa dentro de uma base existente em vez de criar nova. */
-  migratePst(sourceId: string, destParentDir: string, name: string, existingStorePath?: string): Promise<MailSource>;
+   *  existingStorePath: importa dentro de uma base existente em vez de criar nova.
+   *  folderIds: importa só as pastas marcadas (subárvore incluída); omitido = tudo. */
+  migratePst(sourceId: string, destParentDir: string, name: string, existingStorePath?: string, folderIds?: string[]): Promise<MailSource>;
   onMigrateProgress(
     cb: (p: {
       phase: 'folders' | 'items' | 'done';
@@ -373,8 +374,8 @@ const api: OutlookApi = {
   createLocalStoreIn: (name, parentDir) =>
     ipcRenderer.invoke('stores:createLocalIn', name, parentDir),
   pickStoreDir: () => ipcRenderer.invoke('stores:pickStoreDir'),
-  migratePst: (sourceId, destParentDir, name, existingStorePath) =>
-    ipcRenderer.invoke('stores:migratePst', sourceId, destParentDir, name, existingStorePath),
+  migratePst: (sourceId, destParentDir, name, existingStorePath, folderIds) =>
+    ipcRenderer.invoke('stores:migratePst', sourceId, destParentDir, name, existingStorePath, folderIds),
   onMigrateProgress: (cb) => {
     const listener = (
       _e: unknown,

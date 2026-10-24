@@ -398,6 +398,19 @@ function dirKeys(dir: string): Promise<DedupIdx> {
   return p;
 }
 
+/**
+ * Aguarda a indexação em background terminar antes de consultar o índice.
+ * Sem isso, num re-download total (estado de "já vistos" zerado/restaurado
+ * sem _dedup.json), as primeiras mensagens entregues passam batido pela
+ * dedupe — gravadas como duplicatas não lidas.
+ */
+async function dedupReady(idx: DedupIdx): Promise<void> {
+  if (idx.pending) {
+    await idx.pending.catch(() => {});
+    idx.pending = undefined;
+  }
+}
+
 /** A chave já existe na pasta E o arquivo correspondente ainda está no disco. */
 function dedupHas(idx: DedupIdx, dir: string, key: string): boolean {
   const f = idx.byKey.get(key);
@@ -422,10 +435,7 @@ export async function dedupContains(dir: string, raw: Buffer): Promise<boolean> 
     // índice ainda está sendo montado — responder agora daria falso negativo
     // e a mensagem seria gravada duplicada. Ao contrário da entrega (que tem
     // o conjunto de vistos em memória), aqui não há outra rede de segurança.
-    if (idx.pending) {
-      await idx.pending.catch(() => {});
-      idx.pending = undefined;
-    }
+    await dedupReady(idx);
     return keysOf(raw).some((k) => dedupHas(idx, dir, k));
   } catch {
     return false;
@@ -440,10 +450,7 @@ export async function dedupContains(dir: string, raw: Buffer): Promise<boolean> 
 export async function dedupNote(dir: string, fileName: string, raw: Buffer): Promise<void> {
   try {
     const idx = await dirKeys(dir);
-    if (idx.pending) {
-      await idx.pending.catch(() => {});
-      idx.pending = undefined;
-    }
+    await dedupReady(idx);
     const ks = keysOf(raw);
     idx.files.set(fileName, ks);
     for (const k of ks) idx.byKey.set(k, fileName);
@@ -471,6 +478,10 @@ async function writeEmlDedup(
 ): Promise<boolean> {
   try {
     const idx = await dirKeys(dir);
+    // Entrega também não pode correr à frente da indexação — o "mapa de
+    // vistos" não a cobre (ele só marca DEPOIS de entregue), então sem o
+    // await um re-download total duplica tudo que ainda não foi indexado.
+    await dedupReady(idx);
     const ks = keysOf(buf);
     // já entregue — conta como sucesso
     if (ks.some((k) => dedupHas(idx, dir, k))) return true;
@@ -759,6 +770,7 @@ export class RuleEngine {
           const dir = ruleDestDir(rule);
           // Dedupe: cópia (mesmo Message-ID/fingerprint) já presente → entregue
           const ridx = await dirKeys(dir);
+          await dedupReady(ridx);
           if (keysOf(buf).some((k) => dedupHas(ridx, dir, k))) return 'delivered';
           if (await writeEmlDedup(dir, `${Date.now()}-${randomUUID().slice(0, 8)}.eml`, buf, account?.email)) {
             result.archived++;

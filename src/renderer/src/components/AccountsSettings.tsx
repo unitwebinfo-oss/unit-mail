@@ -270,6 +270,11 @@ export function AccountsSettings({
   // arquivo .pst…") — ao concluir, fecha-o de novo para não deixar um PST
   // "pendurado" na lista, já que o objetivo é só a base convertida.
   const [migrateCloseAfter, setMigrateCloseAfter] = useState(false);
+  // Árvore do PST/base de origem + pastas marcadas para importar
+  // (null = ainda carregando; marcar uma pasta inclui a subárvore).
+  const [migrateTree, setMigrateTree] = useState<FolderNode[] | null>(null);
+  const [migrateSel, setMigrateSel] = useState<Set<string>>(new Set());
+  const [migrateAllIds, setMigrateAllIds] = useState<Set<string>>(new Set());
 
   // ---------- Importar Thunderbird (.mbox do perfil) ----------
   const [tbProfiles, setTbProfiles] = useState<TbMailProfile[] | null>(null);
@@ -289,6 +294,26 @@ export function AccountsSettings({
       setMigrateProgress(null);
       setMigrateError('');
       setMigrateDone(null);
+      // Carrega a árvore da origem para a seleção de pastas — tudo marcado
+      // por padrão (o comportamento anterior: importar o PST inteiro).
+      setMigrateTree(null);
+      setMigrateSel(new Set());
+      window.outlook
+        .getFolderTree(migrateSrc.id)
+        .then((tree: FolderNode[]) => {
+          const all = new Set<string>();
+          const walk = (ns: FolderNode[]) => {
+            for (const n of ns) {
+              all.add(n.id);
+              walk(n.children);
+            }
+          };
+          walk(tree);
+          setMigrateTree(tree);
+          setMigrateAllIds(all);
+          setMigrateSel(all);
+        })
+        .catch(() => setMigrateTree([]));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [migrateSrc]);
@@ -310,17 +335,71 @@ export function AccountsSettings({
     }
   };
 
+  /** Marca/desmarca a pasta e TODA a subárvore — selecionar "Caixa de
+   *  Entrada" traz as subpastas dela junto, como o usuário espera. */
+  const toggleMigrateFolder = (node: FolderNode, checked: boolean) => {
+    const next = new Set(migrateSel);
+    const walk = (n: FolderNode) => {
+      if (checked) next.add(n.id);
+      else next.delete(n.id);
+      n.children.forEach(walk);
+    };
+    walk(node);
+    setMigrateSel(next);
+  };
+
+  const renderMigrateNode = (node: FolderNode, depth: number): React.ReactNode => (
+    <div key={node.id}>
+      <label
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 6,
+          padding: '2px 0',
+          paddingLeft: depth * 18,
+          fontSize: 12,
+          cursor: 'pointer',
+        }}
+      >
+        <input
+          type="checkbox"
+          checked={migrateSel.has(node.id)}
+          onChange={(e) => toggleMigrateFolder(node, e.target.checked)}
+        />
+        <span
+          style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+          title={node.name}
+        >
+          {node.name}
+        </span>
+        {node.contentCount > 0 && (
+          <span style={{ color: 'var(--text-dim)', fontSize: 11 }}>{node.contentCount}</span>
+        )}
+      </label>
+      {node.children.map((c) => renderMigrateNode(c, depth + 1))}
+    </div>
+  );
+
   const runMigration = async () => {
     if (!migrateSrc) return;
     if (!migrateTarget && !migrateName.trim()) return;
+    // Árvore carregada e nada marcado = nada a importar; se a árvore não
+    // carregou (erro/vazia), a importação segue completa como antes.
+    const hasTree = !!migrateTree && migrateTree.length > 0;
+    if (hasTree && migrateSel.size === 0) return;
     setMigrateError('');
     try {
+      // Seleção parcial → só as pastas marcadas; tudo marcado = migração
+      // completa (folderIds omitido).
+      const folderIds =
+        hasTree && migrateSel.size < migrateAllIds.size ? [...migrateSel] : undefined;
       // migrateDir vazio → o main cria na pasta de dados padrão (Mail/).
       const dest = await window.outlook.migratePst(
         migrateSrc.id,
         migrateDir,
         migrateName.trim(),
         migrateTarget || undefined,
+        folderIds,
       );
       // Fluxo de importação direta: fecha o PST temporário — só a base
       // convertida fica visível em Arquivos de Dados. O arquivo .pst em si
@@ -2870,7 +2949,7 @@ export function AccountsSettings({
               {!migrateProgress && !migrateDone && (
                 <>
                   <p className="set-hint">
-                    {t('Copia TODAS as pastas e mensagens do PST para uma base nova, 100% do Unit Mail — sem a limitação de "somente leitura" do formato .pst. Nessa base, excluir apaga o arquivo de verdade e libera espaço em disco de imediato.')}
+                    {t('Copia as pastas e mensagens do PST para uma base 100% do Unit Mail — sem a limitação de "somente leitura" do formato .pst. Nessa base, excluir apaga o arquivo de verdade e libera espaço em disco de imediato. Escolha abaixo quais pastas importar (padrão: todas).')}
                   </p>
                   <div className="rule-warn" style={{ marginBottom: 4 }}>
                     ⚠ {t('O PST original')} <strong>{t('não é alterado nem apagado')}</strong> —
@@ -2883,6 +2962,50 @@ export function AccountsSettings({
                     ⏱ <strong>{t('PSTs grandes podem demorar')}</strong> —{' '}
                     {t('um arquivo de vários GB leva bastante tempo para copiar item a item. O progresso é mostrado durante a importação; não feche o app enquanto ela roda.')}
                   </div>
+                  <Field label={t('Pastas a importar')}>
+                    <div
+                      className="inp"
+                      style={{ padding: '6px 8px', background: 'var(--surface)' }}
+                    >
+                      {migrateTree === null ? (
+                        <span style={{ fontSize: 12, color: 'var(--text-dim)' }}>{t('Carregando pastas…')}</span>
+                      ) : migrateTree.length === 0 ? (
+                        <span style={{ fontSize: 12, color: 'var(--text-dim)' }}>{t('Nenhuma pasta encontrada neste arquivo.')}</span>
+                      ) : (
+                        <>
+                          <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginBottom: 4 }}>
+                            <button
+                              type="button"
+                              className="btn-ghost"
+                              style={{ padding: 0, fontSize: 11 }}
+                              onClick={() => setMigrateSel(new Set(migrateAllIds))}
+                            >
+                              {t('Todas')}
+                            </button>
+                            <button
+                              type="button"
+                              className="btn-ghost"
+                              style={{ padding: 0, fontSize: 11 }}
+                              onClick={() => setMigrateSel(new Set())}
+                            >
+                              {t('Nenhuma')}
+                            </button>
+                            <span style={{ fontSize: 11, color: 'var(--text-dim)', marginLeft: 'auto' }}>
+                              {t('{sel} de {tot} pasta(s)', { sel: migrateSel.size, tot: migrateAllIds.size })}
+                            </span>
+                          </div>
+                          <div style={{ maxHeight: 180, overflowY: 'auto', overflowX: 'hidden' }}>
+                            {migrateTree.map((n) => renderMigrateNode(n, 0))}
+                          </div>
+                          {migrateSel.size < migrateAllIds.size && (
+                            <div style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 4 }}>
+                              {t('Marcar uma pasta inclui as subpastas dela. Mensagens já existentes no destino não são duplicadas.')}
+                            </div>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  </Field>
                   <Field label="Importar para">
                     <select
                       className="inp"
@@ -2933,7 +3056,7 @@ export function AccountsSettings({
                   <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
                     <button
                       className="btn btn-primary"
-                      disabled={!migrateTarget && !migrateName.trim()}
+                      disabled={(!migrateTarget && !migrateName.trim()) || (!!migrateTree && migrateTree.length > 0 && migrateSel.size === 0)}
                       onClick={runMigration}
                     >
                       {migrateCloseAfter ? t('Importar') : t('Iniciar migração')}
