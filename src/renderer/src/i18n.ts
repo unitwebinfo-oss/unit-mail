@@ -606,6 +606,9 @@ const EN: Record<string, string> = {
   'Editar assinatura': 'Edit signature',
   'Nome da assinatura': 'Signature name',
   'Conteúdo': 'Content',
+  'Alternar entre editor visual e código HTML': 'Toggle between visual editor and HTML code',
+  'Cole aqui o código HTML da assinatura…': 'Paste the signature HTML code here…',
+  'Visual': 'Visual',
   'Seu Nome — Cargo, Empresa, telefone…': 'Your Name — Title, Company, phone…',
   'Para redimensionar uma imagem, clique nela e arraste a alça do canto inferior direito — a proporção é mantida.':
     'To resize an image, click it and drag the bottom-right handle — aspect ratio is kept.',

@@ -221,6 +221,10 @@ export function AccountsSettings({
   const [customFolder, setCustomFolder] = useState(false);
   const [signatures, setSignatures] = useState<Signature[]>([]);
   const [sigDraft, setSigDraft] = useState<(Omit<Signature, 'id'> & { id?: string }) | null>(null);
+  /** Modo "fonte HTML" do editor de assinatura — colar código pronto (ex.: de
+   *  gerador de assinatura/Outlook) em vez de montar no editor visual. */
+  const [sigSrcMode, setSigSrcMode] = useState(false);
+  React.useEffect(() => setSigSrcMode(false), [sigDraft === null]);
   /** Contas que devem usar a assinatura em edição — aplicadas ao salvar. */
   const [sigAssign, setSigAssign] = useState<Record<string, { new: boolean; reply: boolean }>>({});
   const [newStoreName, setNewStoreName] = useState('');
@@ -2178,13 +2182,33 @@ export function AccountsSettings({
                 {/* div.fld (não <label>): o clique numa imagem dentro do editor
                     não deve disparar o comportamento padrão de label */}
                 <div className="fld sig-dlg-editor">
-                  <span>{t('Conteúdo')}</span>
-                  <RichTextEditor
-                    key={sigDraft.id || 'nova'}
-                    value={sigDraft.html}
-                    onChange={(html) => setSigDraft({ ...sigDraft, html })}
-                    placeholder={t('Seu Nome — Cargo, Empresa, telefone…')}
-                  />
+                  <span style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    {t('Conteúdo')}
+                    <button
+                      type="button"
+                      className="btn btn-ghost"
+                      onClick={() => setSigSrcMode((v) => !v)}
+                      title={t('Alternar entre editor visual e código HTML')}
+                    >
+                      {sigSrcMode ? t('Visual') : 'HTML'}
+                    </button>
+                  </span>
+                  {sigSrcMode ? (
+                    <textarea
+                      className="inp"
+                      style={{ minHeight: 240, fontFamily: 'monospace', fontSize: 12, resize: 'vertical' }}
+                      value={sigDraft.html}
+                      onChange={(e) => setSigDraft({ ...sigDraft, html: e.target.value })}
+                      placeholder={t('Cole aqui o código HTML da assinatura…')}
+                    />
+                  ) : (
+                    <RichTextEditor
+                      key={sigDraft.id || 'nova'}
+                      value={sigDraft.html}
+                      onChange={(html) => setSigDraft({ ...sigDraft, html })}
+                      placeholder={t('Seu Nome — Cargo, Empresa, telefone…')}
+                    />
+                  )}
                 </div>
                 <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>
                   {t('Para redimensionar uma imagem, clique nela e arraste a alça do canto inferior direito — a proporção é mantida.')}
