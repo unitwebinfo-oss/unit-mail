@@ -92,12 +92,25 @@ function MailBody({ item, loadRemoteImages }: { item: ItemDetail; loadRemoteImag
             {t('Para proteger sua privacidade, as imagens externas desta mensagem foram bloqueadas. Ative em Configurações de Conta → Geral.')}
           </div>
         )}
-        {/* iframe sandboxed: sem scripts; allow-popups permite links abrirem
-            fora (o main nega a janela e abre no navegador do SO). */}
+        {/* iframe sandboxed: sem scripts. allow-same-origin permite anexar o
+            interceptador de clique — links http(s) abrem via openExternal
+            direto, sem depender do caminho de popup (frágil em iframe
+            sandboxed). Esquemas externos (chatgpt:// etc.) morrem no deny do
+            handler de janela; mailto: segue o fluxo normal → rascunho no app. */}
         <iframe
-          sandbox="allow-popups allow-popups-to-escape-sandbox"
+          sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox"
           title="email"
           srcDoc={externalizeLinks(stripScripts(stripRemoteStyles(html)))}
+          onLoad={(e) => {
+            const doc = (e.currentTarget as HTMLIFrameElement).contentDocument;
+            doc?.addEventListener('click', (ev) => {
+              const a = (ev.target as HTMLElement | null)?.closest?.('a[href]');
+              const href = a?.getAttribute('href') || '';
+              if (!/^https?:/i.test(href)) return;
+              ev.preventDefault();
+              void window.outlook.openExternal(href);
+            });
+          }}
         />
       </>
     );
