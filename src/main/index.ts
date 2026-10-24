@@ -2991,7 +2991,10 @@ function installLinuxDesktopEntry(): void {
       'Version=1.0',
       'Name=Unit Mail',
       'Comment=Cliente de email com suporte a arquivos PST',
-      `Exec="${process.execPath}" %U`,
+      // Espaço no caminho do executável quebra o SUID sandbox do Chromium
+      // (execvp corta no espaço) — ex.: "/opt/Unit Mail/unit-mail". Sem o
+      // --no-sandbox o atalho gerado aqui abria uma vez e morria depois.
+      `Exec="${process.execPath}"${/\s/.test(process.execPath) ? ' --no-sandbox' : ''} %U`,
       'Icon=unit-mail',
       'Terminal=false',
       'Categories=Network;Email;',
