@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, nativeTheme, net, Notification, screen, shell } from 'electron';
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeTheme, net, Notification, screen, shell } from 'electron';
 import { basename, join, resolve } from 'path';
 import { tmpdir } from 'os';
 import { randomUUID, createHash } from 'crypto';
@@ -985,6 +985,48 @@ function createWindow(): BrowserWindow {
       win.webContents.send('mail:openMailto', url);
     }
     return { action: 'deny' };
+  });
+
+  // Menu de contexto (botão direito) — cobre o corpo do email dentro do iframe
+  // sandboxed (o evento do renderer não chega lá) e os campos editáveis.
+  // Links externos só oferecem "abrir" para http(s) — esquemas tipo chatgpt://
+  // não devem disparar apps de terceiros.
+  win.webContents.on('context-menu', (_e, p) => {
+    const en = appLanguage() === 'en';
+    const menu: Electron.MenuItemConstructorOptions[] = [];
+    if (p.linkURL) {
+      if (/^https?:/i.test(p.linkURL)) {
+        menu.push({
+          label: en ? 'Open link in browser' : 'Abrir link no navegador',
+          click: () => void shell.openExternal(p.linkURL),
+        });
+      }
+      menu.push(
+        {
+          label: en ? 'Copy link address' : 'Copiar endereço do link',
+          click: () => clipboard.writeText(p.linkURL),
+        },
+        { type: 'separator' },
+      );
+    }
+    if (p.isEditable) {
+      menu.push(
+        { label: en ? 'Undo' : 'Desfazer', role: 'undo', enabled: p.editFlags.canUndo },
+        { label: en ? 'Redo' : 'Refazer', role: 'redo', enabled: p.editFlags.canRedo },
+        { type: 'separator' },
+        { label: en ? 'Cut' : 'Recortar', role: 'cut', enabled: p.editFlags.canCut },
+        { label: en ? 'Copy' : 'Copiar', role: 'copy', enabled: p.editFlags.canCopy },
+        { label: en ? 'Paste' : 'Colar', role: 'paste', enabled: p.editFlags.canPaste },
+        { type: 'separator' },
+        { label: en ? 'Select all' : 'Selecionar tudo', role: 'selectAll' },
+      );
+    } else {
+      if (p.selectionText.trim()) {
+        menu.push({ label: en ? 'Copy' : 'Copiar', role: 'copy' });
+      }
+      menu.push({ label: en ? 'Select all' : 'Selecionar tudo', role: 'selectAll' });
+    }
+    if (menu.length) Menu.buildFromTemplate(menu).popup({ window: win });
   });
 
   // Estava maximizada ao fechar → reabre maximizada. Chamar maximize() antes
