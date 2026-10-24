@@ -188,6 +188,7 @@ function Row({
   onCtx,
   catById,
   hl,
+  sentFolder,
 }: {
   m: ItemSummary;
   selected: boolean;
@@ -199,6 +200,8 @@ function Row({
   catById?: Map<string, MailCategory>;
   /** Termos da busca para realçar no remetente/assunto (já normalizados). */
   hl?: string[];
+  /** Pasta de saída (enviados/rascunhos) — a coluna mostra o destinatário. */
+  sentFolder?: boolean;
 }) {
   return (
     <div
@@ -215,7 +218,7 @@ function Row({
       onClick={onSelect}
       onDoubleClick={onOpen}
       onContextMenu={onCtx}
-      title={`${m.senderName || m.senderEmailAddress} — ${m.subject}`}
+      title={`${sentFolder ? m.displayTo || m.displayCC : m.senderName || m.senderEmailAddress} — ${m.subject}`}
     >
       <span className="ml-icons">
         {m.inviteMethod && <Icon name="meeting" size={15} color="#0f6cbd" />}
@@ -240,7 +243,12 @@ function Row({
         })}
       </span>
       <span className="ml-from">
-        {highlightText(m.senderName || m.senderEmailAddress || '(desconhecido)', hl ?? [])}
+        {highlightText(
+          sentFolder
+            ? m.displayTo || m.displayCC || '(sem destinatário)'
+            : m.senderName || m.senderEmailAddress || '(desconhecido)',
+          hl ?? [],
+        )}
       </span>
       <span className="ml-subject">{highlightText(m.subject, hl ?? [])}</span>
       <span className="ml-date">{fmtSmartDate(m.deliveryTime || m.sentTime)}</span>
@@ -527,7 +535,10 @@ export function MessageList({
     const val = (m: ItemSummary): string | number => {
       switch (sortKey) {
         case 'from':
-          return (m.senderName || m.senderEmailAddress || '').toLowerCase();
+          return (noUnreadFilter
+            ? m.displayTo || m.displayCC || ''
+            : m.senderName || m.senderEmailAddress || ''
+          ).toLowerCase();
         case 'subject':
           return (m.subject || '').toLowerCase();
         case 'size':
@@ -858,9 +869,9 @@ export function MessageList({
       )}
       <div className="msg-header">
         <span className="ml-icons" />
-        {hcell('from', 'De')}
+        {hcell('from', noUnreadFilter ? 'Para' : 'De')}
         {hcell('subject', 'Assunto')}
-        {hcell('date', 'Recebido em')}
+        {hcell('date', noUnreadFilter ? 'Enviado' : 'Recebido em')}
         {hcell('size', 'Tamanho')}
       </div>
       <div
@@ -965,6 +976,7 @@ export function MessageList({
                   ? (e) => openMsgCtx(e, v.m, dragRef.sourceId, dragRef.folderId)
                   : undefined
               }
+              sentFolder={noUnreadFilter}
             />
           ) : (
             <Row
