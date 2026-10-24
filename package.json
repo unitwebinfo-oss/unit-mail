@@ -1,6 +1,6 @@
 {
   "name": "unit-mail",
-  "version": "1.0.11",
+  "version": "1.0.12",
   "productName": "Unit Mail",
   "description": "Cliente de email estilo Outlook 2016 para Linux e Windows com leitura de arquivos PST",
   "license": "GPL-3.0-only",
@@ -53,6 +53,9 @@
       "maintainer": "Roger Oliveira",
       "description": "Cliente de email estilo Outlook 2016 com leitura de arquivos PST",
       "syncDesktopName": true
+    },
+    "deb": {
+      "afterInstall": "build/linux/after-install.sh"
     },
     "win": {
       "target": [

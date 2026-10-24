@@ -2498,6 +2498,29 @@ export class PstService {
     return results;
   }
 
+  /** Monta "Nome <email>; ..." a partir da tabela de recipients do item.
+   *  recipientType MAPI: 1 = To, 2 = Cc, 3 = Bcc. */
+  private recipientList(msg: any, type: number): string {
+    const out: string[] = [];
+    const n: number = msg.numberOfRecipients || 0;
+    for (let i = 0; i < n; i++) {
+      try {
+        const r = msg.getRecipient(i);
+        if (!r || r.recipientType !== type) continue;
+        const addr = (r.smtpAddress || r.emailAddress || '').trim();
+        const name = ((r as { displayName?: string }).displayName || '')
+          .replace(/[<>]/g, '')
+          .trim();
+        if (name && addr) out.push(`${name} <${addr}>`);
+        else if (addr) out.push(addr);
+        else if (name) out.push(name);
+      } catch {
+        // recipient ilegível — ignora
+      }
+    }
+    return out.join('; ');
+  }
+
   private requireOpen(): void {
     if (!this.pst && !this.localOnly) throw new Error('Nenhum arquivo PST aberto');
   }
@@ -2511,8 +2534,11 @@ export class PstService {
       subject: msg.subject || msg.displayName || '(sem assunto)',
       senderName: msg.senderName || '',
       senderEmailAddress: msg.senderEmailAddress || '',
-      displayTo: msg.displayTo || '',
-      displayCC: msg.displayCC || '',
+      // PR_DISPLAY_TO/CC nem sempre existe no PST — alguns itens só têm a
+      // tabela de recipients (MAPI). Sem o fallback o .eml exportado saía sem
+      // To:/Cc: e a pasta de enviados mostrava "(sem destinatário)".
+      displayTo: msg.displayTo || this.recipientList(msg, 1),
+      displayCC: msg.displayCC || this.recipientList(msg, 2),
       sentTime: toIso(msg.clientSubmitTime),
       deliveryTime: toIso(msg.messageDeliveryTime),
       hasAttachments: !!msg.hasAttachments,
