@@ -25,7 +25,7 @@ interface CalendarModuleProps {
   calendars: CalendarRef[];
   /** Editar compromisso criado nesta base — abre o diálogo com os dados. */
   onEditItem?: (
-    ref: { sourceId: string; folderId: string; index: number },
+    ref: { sourceId: string; folderId: string; index: number; stableId?: string },
     detail: ItemDetail,
   ) => void;
 }
@@ -213,7 +213,7 @@ export function CalendarModule({
   const [selectedDay, setSelectedDay] = useState<string>(dayKey(today));
   const [sideW, setSideW] = useState(() => Number(localStorage.getItem('pane.calSideW')) || 240);
   const [openDetail, setOpenDetail] = useState<ItemDetail | null>(null);
-  const [openRef, setOpenRef] = useState<{ sourceId: string; folderId: string; index: number } | null>(null);
+  const [openRef, setOpenRef] = useState<{ sourceId: string; folderId: string; index: number; stableId?: string } | null>(null);
   const [search, setSearch] = useState('');
   const dragBase = useRef(0);
 
@@ -301,8 +301,18 @@ export function CalendarModule({
   const openItem = async (ev: CalEvent) => {
     onSelect(ev);
     try {
-      const detail = await window.outlook.getItem(ev.calSourceId, ev.calFolderId, ev.index);
-      setOpenRef({ sourceId: ev.calSourceId, folderId: ev.calFolderId, index: ev.index });
+      const detail = await window.outlook.getItem(
+        ev.calSourceId,
+        ev.calFolderId,
+        ev.index,
+        ev.stableId,
+      );
+      setOpenRef({
+        sourceId: ev.calSourceId,
+        folderId: ev.calFolderId,
+        index: ev.index,
+        stableId: ev.stableId,
+      });
       setOpenDetail(detail);
     } catch {
       // detalhe indisponível — a seleção no painel de leitura ainda funciona

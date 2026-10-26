@@ -121,9 +121,13 @@ export default function App() {
   /**
    * Cache de detalhes por mensagem — clicar de novo num item já lido é
    * instantâneo (o getItem de PST re-ler o arquivo todo seria pesado).
+   * Chaveado por stableId (não por índice): o índice posicional desloca
+   * quando a pasta recebe/perde itens e a entrada cacheada abriria a
+   * mensagem errada.
    */
   const detailCache = useRef(new Map<string, ItemDetail>());
-  const detailKey = (sid: string, fid: string, idx: number) => `${sid}|${fid}|${idx}`;
+  const detailKey = (sid: string, fid: string, idx: number, stableId?: string) =>
+    `${sid}|${fid}|${stableId ?? `i${idx}`}`;
   const [searchResults, setSearchResults] = useState<GlobalSearchHit[] | null>(null);
   const [loading, setLoading] = useState('');
   /** Loading leve da lista de mensagens (troca de pasta) — overlay só na lista. */
@@ -168,6 +172,7 @@ export default function App() {
     sourceId: string;
     folderId: string;
     index: number;
+    stableId?: string;
     item: NewSpecialItem;
   } | null>(null);
   /** Base onde itens especiais são criados — sempre a principal (arquivo de dados padrão). */
@@ -295,10 +300,11 @@ export default function App() {
       const first = await window.outlook.getItems(sourceId, folder.id, 0, PAGE);
       if (seq !== loadSeq.current) return;
       // A pasta recarregou: os índices podem ter mudado (mensagem nova no
-      // topo desloca todos). O detailCache é chaveado por índice — sem limpar,
-      // clicar numa mensagem abriria o conteúdo cacheado de outra.
+      // topo desloca todos). O detailCache é chaveado por stableId, então
+      // sobrevive ao deslocamento — só entradas de itens que sumiram ficam
+      // órfãs e saem pelo limite do cache.
       for (const k of [...detailCache.current.keys()]) {
-        if (k.startsWith(`${cacheKey}|`)) detailCache.current.delete(k);
+        if (k.startsWith(`${cacheKey}|i`)) detailCache.current.delete(k);
       }
       setItems(first);
       setItemCount(count);
@@ -310,14 +316,24 @@ export default function App() {
       // loadingMore bloqueia o scroll infinito enquanto isso roda.
       loadingMore.current = true;
       try {
+        // Dedupe por stableId: uma entrega no meio da paginação desloca o
+        // espaço de índices e a página seguinte repetiria mensagens já
+        // exibidas (a lista duplicada depois apontava para o item errado).
+        const seen = new Set(first.map((i) => i.stableId ?? `i${i.index}`));
         let offset = first.length;
         const acc = [...first];
         while (offset < count) {
           const more = await window.outlook.getItems(sourceId, folder.id, offset, 500);
           if (seq !== loadSeq.current || more.length === 0) break;
           offset += more.length;
-          acc.push(...more);
-          setItems((prev) => [...prev, ...more]);
+          const fresh = more.filter((i) => {
+            const k = i.stableId ?? `i${i.index}`;
+            if (seen.has(k)) return false;
+            seen.add(k);
+            return true;
+          });
+          acc.push(...fresh);
+          if (fresh.length) setItems((prev) => [...prev, ...fresh]);
         }
         // Só grava no cache se o carregamento completou — cache parcial
         // mostraria a pasta "pela metade" na próxima visita.
@@ -690,7 +706,7 @@ export default function App() {
       if (sid === undefined || fid === undefined) return;
       const seq = ++selSeq.current;
       setDetailRef({ sourceId: sid, folderId: fid });
-      const key = detailKey(sid, fid, item.index);
+      const key = detailKey(sid, fid, item.index, item.stableId);
       const cached = detailCache.current.get(key);
       if (cached) {
         if (seq === selSeq.current) setDetail(cached);
@@ -699,11 +715,12 @@ export default function App() {
         // segundo clique do duplo clique e piscava a cada seleção.
         setDetailLoading(true);
         try {
-          const d = await window.outlook.getItem(sid, fid, item.index);
+          // stableId resolve a posição ATUAL do item — um índice velho
+          // (pasta recebeu itens depois da listagem) não abre a mensagem errada.
+          const d = await window.outlook.getItem(sid, fid, item.index, item.stableId);
           // Só cacheia se a seleção ainda é a atual — um getItem atrasado
-          // (pré-seleção do sucessor na exclusão) resolve com o índice VELHO
-          // já remapeado para outra mensagem e envenenava o cache: o painel
-          // mostrava "mensagem de outro email" até trocar de pasta.
+          // (pré-seleção do sucessor na exclusão) resolveria depois de outra
+          // seleção assumir e envenenaria o painel.
           if (seq === selSeq.current) {
             detailCache.current.set(key, d);
             if (detailCache.current.size > 400) {
@@ -724,9 +741,9 @@ export default function App() {
       // Só para a seleção atual: chamada atrasada decrementaria o badge e
       // marcaria lido o item ERRADO (o índice já remapeou para outro).
       if (!item.isRead && seq === selSeq.current) {
-        setItems((prev) =>
-          prev.map((it) => (it.index === item.index ? { ...it, isRead: true } : it)),
-        );
+        const same = (it: ItemSummary) =>
+          item.stableId ? it.stableId === item.stableId : it.index === item.index;
+        setItems((prev) => prev.map((it) => (same(it) ? { ...it, isRead: true } : it)));
         decrementFolderUnread(sid, fid);
       }
     },
@@ -849,7 +866,13 @@ export default function App() {
     async (attachIndex: number) => {
       if (!detail || !detailRef) return;
       try {
-        await window.outlook.saveAttachment(detailRef.sourceId, detailRef.folderId, detail.index, attachIndex);
+        await window.outlook.saveAttachment(
+          detailRef.sourceId,
+          detailRef.folderId,
+          detail.index,
+          attachIndex,
+          detail.stableId,
+        );
       } catch (e) {
         setError(t('Erro ao salvar anexo: {msg}', { msg: (e as Error).message }));
       }
@@ -867,6 +890,7 @@ export default function App() {
           detailRef.folderId,
           detail.index,
           attachIndex,
+          detail.stableId,
         );
       } catch (e) {
         setError(t('Erro ao abrir anexo: {msg}', { msg: (e as Error).message }));
@@ -883,6 +907,7 @@ export default function App() {
         detailRef.sourceId,
         detailRef.folderId,
         detail.index,
+        detail.stableId,
       );
       if (res && res.saved < res.total) {
         setError(t('{n} de {total} anexos salvos em "{dir}"', { n: res.saved, total: res.total, dir: res.dir }));
@@ -902,6 +927,7 @@ export default function App() {
           openMsg.folderId,
           openMsg.detail.index,
           attachIndex,
+          openMsg.detail.stableId,
         );
       } catch (e) {
         setError(t('Erro ao salvar anexo: {msg}', { msg: (e as Error).message }));
@@ -920,6 +946,7 @@ export default function App() {
           openMsg.folderId,
           openMsg.detail.index,
           attachIndex,
+          openMsg.detail.stableId,
         );
       } catch (e) {
         setError(t('Erro ao abrir anexo: {msg}', { msg: (e as Error).message }));
@@ -936,6 +963,7 @@ export default function App() {
         openMsg.sourceId,
         openMsg.folderId,
         openMsg.detail.index,
+        openMsg.detail.stableId,
       );
       if (res && res.saved < res.total) {
         setError(t('{n} de {total} anexos salvos em "{dir}"', { n: res.saved, total: res.total, dir: res.dir }));
@@ -961,7 +989,7 @@ export default function App() {
         folderKindOf(arcName) === 'drafts';
       if (isDrafts) {
         try {
-          const payload = await window.outlook.openDraft(sid, fid, item.index);
+          const payload = await window.outlook.openDraft(sid, fid, item.index, item.stableId);
           if (payload) {
             void selectItem(item, sid, fid); // marca na lista também
             openDraft({ bodyText: '', ...payload } as ComposeDraft);
@@ -973,14 +1001,14 @@ export default function App() {
       }
       // Seleciona na lista também (marca lida + mostra no painel)
       void selectItem(item, sid, fid);
-      const key = detailKey(sid, fid, item.index);
+      const key = detailKey(sid, fid, item.index, item.stableId);
       const cached = detailCache.current.get(key);
       if (cached) {
         setOpenMsg({ detail: cached, sourceId: sid, folderId: fid });
         return;
       }
       try {
-        const d = await window.outlook.getItem(sid, fid, item.index);
+        const d = await window.outlook.getItem(sid, fid, item.index, item.stableId);
         detailCache.current.set(key, d);
         setOpenMsg({ detail: d, sourceId: sid, folderId: fid });
       } catch (e) {
@@ -997,7 +1025,7 @@ export default function App() {
     if (!node) return;
     setModule('calendar');
     await loadFolder(r.sourceId, node);
-    const d = await window.outlook.getItem(r.sourceId, r.folderId, r.index);
+    const d = await window.outlook.getItem(r.sourceId, r.folderId, r.index, r.stableId);
     if (d) setDetail(d);
     dismissReminderKey(r.key);
     void window.outlook.snoozeReminder?.(r.key, 0);
@@ -1050,6 +1078,7 @@ export default function App() {
   const moveItem = useCallback(
     async (payload: ItemDragPayload, destSourceId: string, destFolder: FolderNode) => {
       const indexes = (payload.indexes ?? [payload.index]).slice().sort((a, b) => b - a);
+      const stIds = stableIdsOf(indexes);
       setLoading(
         indexes.length > 1
           ? `Movendo ${indexes.length} itens para "${destFolder.name}"…`
@@ -1058,13 +1087,14 @@ export default function App() {
       try {
         let copied = 0;
         let moved = 0;
-        for (const ix of indexes) {
+        for (const [i, ix] of indexes.entries()) {
           const res = await window.outlook.moveItem(
             payload.sourceId,
             payload.folderId,
             ix,
             destSourceId,
             destFolder.id,
+            stIds[i],
           );
           if (res === 'copiado') copied++;
           else moved++;
@@ -1114,6 +1144,18 @@ export default function App() {
     return detail ? [detail.index] : [];
   }, [detail, detailRef, selected, selIndexes]);
 
+  /**
+   * stableIds paralelos a uma lista de índices — resolvem o item pela
+   * identidade estável mesmo que a pasta tenha recebido/perdido itens
+   * depois da listagem (índice posicional desloca). Itens fora da lista
+   * em memória ficam undefined → o backend cai no índice, como antes.
+   */
+  const stableIdsOf = useCallback((indexes: number[]): (string | undefined)[] => {
+    const byIdx = new Map(itemsRef.current.map((m) => [m.index, m.stableId]));
+    const d = detailRefState.current.detail;
+    return indexes.map((ix) => byIdx.get(ix) ?? (d?.index === ix ? d.stableId : undefined));
+  }, []);
+
   /** Move os itens selecionados para uma pasta por nome (Lixo eletrônico, Arquivo Morto…). */
   const moveItemTo = useCallback(
     async (folderName: string) => {
@@ -1133,13 +1175,15 @@ export default function App() {
       );
       try {
         let copied = 0;
-        for (const ix of indexes) {
+        const stIds = stableIdsOf(indexes);
+        for (const [i, ix] of indexes.entries()) {
           const res = await window.outlook.moveItem(
             detailRef.sourceId,
             detailRef.folderId,
             ix,
             detailRef.sourceId,
             dstId,
+            stIds[i],
           );
           if (res === 'copiado') copied++;
         }
@@ -1257,8 +1301,9 @@ export default function App() {
       // Na lixeira: apaga o .eml local e oculta o item do PST.
       // Em lote (uma chamada IPC): estados em disco gravados uma vez no fim —
       // centenas de itens de uma vez em vez de uma gravação por item.
+      const stIds = stableIdsOf(indexes);
       if (inTrash) {
-        await window.outlook.deleteItems(detailRef.sourceId, detailRef.folderId, indexes);
+        await window.outlook.deleteItems(detailRef.sourceId, detailRef.folderId, indexes, stIds);
       } else {
         await window.outlook.moveItems(
           detailRef.sourceId,
@@ -1266,6 +1311,7 @@ export default function App() {
           indexes,
           detailRef.sourceId,
           arcFolderId(folderTrees[detailRef.sourceId] || [], 'deleted', lang),
+          stIds,
         );
       }
       setError('');
@@ -1580,14 +1626,23 @@ export default function App() {
 
   /** O que a área de edição recebe — o diálogo chama isso ao salvar a edição. */
   const updateSpecialItem = useCallback(
-    async (ref: { sourceId: string; folderId: string; index: number }, item: NewSpecialItem) => {
-      const res = await window.outlook.updateSpecialItem(ref.sourceId, ref.folderId, ref.index, item);
+    async (
+      ref: { sourceId: string; folderId: string; index: number; stableId?: string },
+      item: NewSpecialItem,
+    ) => {
+      const res = await window.outlook.updateSpecialItem(
+        ref.sourceId,
+        ref.folderId,
+        ref.index,
+        item,
+        ref.stableId,
+      );
       applyTree(ref.sourceId, res.tree);
       setEditingItem(null);
       // Detalhe em cache ficou velho — recarrega do disco.
-      detailCache.current.delete(detailKey(ref.sourceId, ref.folderId, ref.index));
+      detailCache.current.delete(detailKey(ref.sourceId, ref.folderId, ref.index, ref.stableId));
       try {
-        const fresh = await window.outlook.getItem(ref.sourceId, ref.folderId, ref.index);
+        const fresh = await window.outlook.getItem(ref.sourceId, ref.folderId, ref.index, ref.stableId);
         setDetail(fresh);
       } catch {
         setDetail(null);
@@ -1613,7 +1668,10 @@ export default function App() {
 
   /** Abre o diálogo de edição — ReadingPane e inspetor do calendário chamam. */
   const openItemEditor = useCallback(
-    (ref: { sourceId: string; folderId: string; index: number }, d: ItemDetail) => {
+    (
+      ref: { sourceId: string; folderId: string; index: number; stableId?: string },
+      d: ItemDetail,
+    ) => {
       setEditingItem({ ...ref, item: detailToNewItem(d) });
     },
     [detailToNewItem],
@@ -1624,7 +1682,12 @@ export default function App() {
     detail?.local && detailRef && /IPM\.(Appointment|Contact|Task)/.test(detail.messageClass)
       ? () =>
           openItemEditor(
-            { sourceId: detailRef.sourceId, folderId: detailRef.folderId, index: detail.index },
+            {
+              sourceId: detailRef.sourceId,
+              folderId: detailRef.folderId,
+              index: detail.index,
+              stableId: detail.stableId,
+            },
             detail,
           )
       : undefined;
@@ -1860,6 +1923,7 @@ export default function App() {
         detailRef.sourceId,
         detailRef.folderId,
         detail.index,
+        detail.stableId,
       );
       if (path) {
         setNotice(t('Mensagem salva em: {path}', { path }));
@@ -1874,7 +1938,12 @@ export default function App() {
   const printItem = useCallback(async () => {
     if (!detailRef || !detail) return;
     try {
-      await window.outlook.printItem(detailRef.sourceId, detailRef.folderId, detail.index);
+      await window.outlook.printItem(
+        detailRef.sourceId,
+        detailRef.folderId,
+        detail.index,
+        detail.stableId,
+      );
     } catch (e) {
       setError(t('Erro ao imprimir: {msg}', { msg: (e as Error).message }));
     }
@@ -1884,7 +1953,12 @@ export default function App() {
   const printOpenMsg = useCallback(async () => {
     if (!openMsg) return;
     try {
-      await window.outlook.printItem(openMsg.sourceId, openMsg.folderId, openMsg.detail.index);
+      await window.outlook.printItem(
+        openMsg.sourceId,
+        openMsg.folderId,
+        openMsg.detail.index,
+        openMsg.detail.stableId,
+      );
     } catch (e) {
       setError(t('Erro ao imprimir: {msg}', { msg: (e as Error).message }));
     }
@@ -1990,6 +2064,7 @@ export default function App() {
           sourceId: detailRef.sourceId,
           folderId: detailRef.folderId,
           index: detail.index,
+          stableId: detail.stableId,
           accountId: defaultAccountId(),
           response,
           newStart,
@@ -2087,7 +2162,7 @@ export default function App() {
   const replyDraftOf = (
     d: ItemDetail,
     all: boolean,
-    ref?: { sourceId: string; folderId: string; index: number },
+    ref?: { sourceId: string; folderId: string; index: number; stableId?: string },
   ): ComposeDraft => {
     const ours = new Set(
       accounts.map((a) => (a.email || '').toLowerCase()).filter(Boolean),
@@ -2130,7 +2205,7 @@ export default function App() {
   };
   const forwardDraftOf = (
     d: ItemDetail,
-    ref?: { sourceId: string; folderId: string; index: number },
+    ref?: { sourceId: string; folderId: string; index: number; stableId?: string },
   ): ComposeDraft => ({
     accountId: defaultAccountId(),
     kind: 'forward',
@@ -2144,7 +2219,9 @@ export default function App() {
   const openReply = useCallback(
     (all: boolean) => {
       if (!detail) return;
-      const ref = detailRef ? { ...detailRef, index: detail.index } : undefined;
+      const ref = detailRef
+        ? { ...detailRef, index: detail.index, stableId: detail.stableId }
+        : undefined;
       openDraft(replyDraftOf(detail, all, ref));
     },
     [detail, detailRef, defaultAccountId],
@@ -2152,7 +2229,9 @@ export default function App() {
 
   const openForward = useCallback(() => {
     if (!detail) return;
-    const ref = detailRef ? { ...detailRef, index: detail.index } : undefined;
+    const ref = detailRef
+      ? { ...detailRef, index: detail.index, stableId: detail.stableId }
+      : undefined;
     openDraft(forwardDraftOf(detail, ref));
   }, [detail, detailRef, defaultAccountId]);
 
@@ -2164,6 +2243,7 @@ export default function App() {
       indexes: number[],
       destFolderId: string,
       destSourceId = sourceId,
+      stableIds?: (string | undefined)[],
     ) => {
       const inOpenFolder =
         selected && selected.sourceId === sourceId && selected.folder.id === folderId;
@@ -2199,7 +2279,14 @@ export default function App() {
       }
       try {
         // Em lote: uma chamada IPC, estados em disco gravados uma vez no fim
-        await window.outlook.moveItems(sourceId, folderId, indexes, destSourceId, destFolderId);
+        await window.outlook.moveItems(
+          sourceId,
+          folderId,
+          indexes,
+          destSourceId,
+          destFolderId,
+          stableIds ?? stableIdsOf(indexes),
+        );
         setError('');
       } catch (e) {
         setError(t('Erro ao mover: {msg}', { msg: (e as Error).message }));
@@ -2244,7 +2331,7 @@ export default function App() {
         await loadFolder(selected.sourceId, selected.folder, true);
       }
     },
-    [selected, items, detail, detailRef, loadFolder, refreshSources, selectItem],
+    [selected, items, detail, detailRef, loadFolder, refreshSources, selectItem, stableIdsOf],
   );
 
   /**
@@ -2259,10 +2346,16 @@ export default function App() {
       const isCur =
         !!selected && selected.sourceId === sourceId && selected.folder.id === folderId;
       const inList = new Map(itemsRef.current.map((m) => [m.index, m]));
+      const stIds = indexes.map(
+        (ix) => inList.get(ix)?.stableId ?? stableIdsOf([ix])[0],
+      );
       const current = new Map<number, string[]>();
-      for (const ix of indexes) {
+      for (const [i, ix] of indexes.entries()) {
         const m = isCur ? inList.get(ix) : undefined;
-        current.set(ix, m?.categories ?? (await api.getItemCategories(sourceId, folderId, ix)));
+        current.set(
+          ix,
+          m?.categories ?? (await api.getItemCategories(sourceId, folderId, ix, stIds[i])),
+        );
       }
       // Agrupa por conjunto resultante — uma chamada IPC por grupo (lote)
       const groups = new Map<string, { cats: string[]; idxs: number[] }>();
@@ -2282,7 +2375,15 @@ export default function App() {
         }
       }
       await Promise.all(
-        [...groups.values()].map((g) => api.setItemCategories(sourceId, folderId, g.idxs, g.cats)),
+        [...groups.values()].map((g) =>
+          api.setItemCategories(
+            sourceId,
+            folderId,
+            g.idxs,
+            g.cats,
+            g.idxs.map((ix) => stIds[indexes.indexOf(ix)]),
+          ),
+        ),
       );
       if (!isCur) return;
       const nextByIdx = new Map<number, string[]>();
@@ -2300,14 +2401,14 @@ export default function App() {
         setDetail({ ...d.detail, categories: cats.length ? cats : undefined });
         if (d.ref) {
           detailCache.current.set(
-            detailKey(d.ref.sourceId, d.ref.folderId, d.detail.index),
+            detailKey(d.ref.sourceId, d.ref.folderId, d.detail.index, d.detail.stableId),
             { ...d.detail, categories: cats.length ? cats : undefined },
           );
         }
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [selected],
+    [selected, stableIdsOf],
   );
 
   /** Ações do menu de contexto da mensagem (botão direito). */
@@ -2318,16 +2419,27 @@ export default function App() {
         sourceId: string;
         folderId: string;
         index: number;
+        stableId?: string;
         indexes: number[];
+        stableIds?: (string | undefined)[];
         isRead: boolean;
         senders?: string[];
       },
     ) => {
       const indexes = ctx.indexes.length ? ctx.indexes : [ctx.index];
+      const stIds = indexes.map((ix) => {
+        const fromCtx = ix === ctx.index ? ctx.stableId : ctx.stableIds?.[ctx.indexes.indexOf(ix)];
+        return fromCtx ?? stableIdsOf([ix])[0];
+      });
       try {
         if (action === 'reply' || action === 'replyAll' || action === 'forward') {
-          const d = await window.outlook.getItem(ctx.sourceId, ctx.folderId, ctx.index);
-          const ref = { sourceId: ctx.sourceId, folderId: ctx.folderId, index: ctx.index };
+          const d = await window.outlook.getItem(ctx.sourceId, ctx.folderId, ctx.index, ctx.stableId);
+          const ref = {
+            sourceId: ctx.sourceId,
+            folderId: ctx.folderId,
+            index: ctx.index,
+            stableId: ctx.stableId,
+          };
           if (action === 'forward') {
             openDraft({
               accountId: defaultAccountId(),
@@ -2354,8 +2466,8 @@ export default function App() {
           const read = action === 'markRead';
           // setItemRead cobre .eml locais e itens do PST (override lógico) —
           // não há gate de "somente leitura" para estado de leitura.
-          for (const ix of indexes) {
-            await window.outlook.setItemRead(ctx.sourceId, ctx.folderId, ix, read);
+          for (const [i, ix] of indexes.entries()) {
+            await window.outlook.setItemRead(ctx.sourceId, ctx.folderId, ix, read, stIds[i]);
           }
           const ixSet = new Set(indexes);
           // loadFolder não re-baixaria (a contagem não muda) — reflete o
@@ -2371,7 +2483,14 @@ export default function App() {
           applyTree(ctx.sourceId, await window.outlook.getFolderTree(ctx.sourceId));
         } else if (action === 'junk') {
           const tree = folderTrees[ctx.sourceId] || [];
-          await moveIndexesTo(ctx.sourceId, ctx.folderId, indexes, arcFolderId(tree, 'junk', lang));
+          await moveIndexesTo(
+            ctx.sourceId,
+            ctx.folderId,
+            indexes,
+            arcFolderId(tree, 'junk', lang),
+            undefined,
+            stIds,
+          );
         } else if (action === 'blockSender') {
           // Bloqueia o(s) remetente(s) e joga a(s) mensagem(ns) no Lixo —
           // as próximas entregas caem direto lá (filtro no processo principal).
@@ -2387,6 +2506,8 @@ export default function App() {
               ctx.folderId,
               indexes,
               arcFolderId(folderTrees[ctx.sourceId] || [], 'junk', lang),
+              undefined,
+              stIds,
             );
             setNotice(
               addrs.size === 1
@@ -2401,6 +2522,8 @@ export default function App() {
             ctx.folderId,
             indexes,
             arcFolderId(folderTrees[ctx.sourceId] || [], 'archive', lang),
+            undefined,
+            stIds,
           );
         } else if (action === 'delete') {
           // Mesma lógica do botão Excluir: fora da lixeira move direto para
@@ -2416,7 +2539,7 @@ export default function App() {
               // (antes itens locais eram apagados permanentemente aqui);
               // na lixeira a exclusão é permanente.
               if (inTrash) {
-                await window.outlook.deleteItems(ctx.sourceId, ctx.folderId, indexes);
+                await window.outlook.deleteItems(ctx.sourceId, ctx.folderId, indexes, stIds);
               } else {
                 await window.outlook.moveItems(
                   ctx.sourceId,
@@ -2424,6 +2547,7 @@ export default function App() {
                   indexes,
                   ctx.sourceId,
                   arcFolderId(folderTrees[ctx.sourceId] || [], 'deleted', lang),
+                  stIds,
                 );
               }
               setError('');
@@ -3082,7 +3206,12 @@ export default function App() {
           onClose={() => setEditingItem(null)}
           onSave={(_sid, item) =>
             updateSpecialItem(
-              { sourceId: editingItem.sourceId, folderId: editingItem.folderId, index: editingItem.index },
+              {
+                sourceId: editingItem.sourceId,
+                folderId: editingItem.folderId,
+                index: editingItem.index,
+                stableId: editingItem.stableId,
+              },
               item,
             )
           }

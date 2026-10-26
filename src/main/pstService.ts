@@ -834,7 +834,8 @@ export class PstService {
   }
 
   /** Chave estável do item para categorias. */
-  private itemCatKey(folderId: string, index: number): string | null {
+  private itemCatKey(folderId: string, index: number, stableId?: string): string | null {
+    index = this.idxFor(folderId, index, stableId);
     if (folderId.startsWith('arc:')) {
       const f = this.archiveFiles(folderId)[index];
       return f ? `a|${folderId.slice(4)}/${f}` : null;
@@ -855,13 +856,13 @@ export class PstService {
   }
 
   /** Categorias do item (ids da lista-mestre). */
-  getItemCategories(folderId: string, index: number): string[] {
-    return this.catsOfKey(this.itemCatKey(folderId, index)) ?? [];
+  getItemCategories(folderId: string, index: number, stableId?: string): string[] {
+    return this.catsOfKey(this.itemCatKey(folderId, index, stableId)) ?? [];
   }
 
   /** Substitui as categorias do item — lista vazia remove a marcação. */
-  setItemCategories(folderId: string, index: number, cats: string[]): void {
-    const key = this.itemCatKey(folderId, index);
+  setItemCategories(folderId: string, index: number, cats: string[], stableId?: string): void {
+    const key = this.itemCatKey(folderId, index, stableId);
     if (!key) return;
     const m = this.loadItemCats();
     if (cats.length) m.set(key, [...new Set(cats)]);
@@ -930,8 +931,9 @@ export class PstService {
   }
 
   /** Oculta um item gravado no PST (exclusão lógica — PST é somente leitura). */
-  hideItem(folderId: string, index: number): void {
+  hideItem(folderId: string, index: number, stableId?: string): void {
     if (folderId.startsWith('arc:')) return; // itens locais são apagados de verdade
+    index = this.idxFor(folderId, index, stableId);
     const raw = index - this.mergedArcCount(folderId);
     if (raw < 0) return;
     const m = this.loadHidden();
@@ -1083,7 +1085,8 @@ export class PstService {
   }
 
   /** Marca um item como lido (usado ao abrir o detalhe). */
-  markItemRead(folderId: string, index: number): void {
+  markItemRead(folderId: string, index: number, stableId?: string): void {
+    index = this.idxFor(folderId, index, stableId);
     if (!folderId.startsWith('arc:')) {
       const arcCount = this.mergedArcCount(folderId);
       if (index >= arcCount) {
@@ -1114,7 +1117,8 @@ export class PstService {
   }
 
   /** Define lido/não-lido — local altera readstate do .eml, item do PST grava override. */
-  setItemRead(folderId: string, index: number, read: boolean): void {
+  setItemRead(folderId: string, index: number, read: boolean, stableId?: string): void {
+    index = this.idxFor(folderId, index, stableId);
     if (!folderId.startsWith('arc:')) {
       const arcCount = this.mergedArcCount(folderId);
       if (index >= arcCount) {
@@ -1415,6 +1419,63 @@ export class PstService {
     return node?.archiveName ? this.archiveFiles(`arc:${node.archiveName}`).length : 0;
   }
 
+  /**
+   * Resolve um `stableId` para o índice posicional ATUAL na pasta.
+   *
+   * O `index` dos itens é posicional e instável: um .eml entregue pelo
+   * Enviar/Receber entra no topo e desloca todos os índices da pasta (nas
+   * mescladas, arcCount cresce e todos os itens do PST deslocam junto).
+   * Qualquer chamada com índice velho abriria/apagaria a mensagem errada.
+   * O stableId identifica o item de verdade:
+   *   a|<rel-canon>/<arquivo> → posição do arquivo na ordenação atual
+   *   p|<folderId>|<pos-bruta> → posição imutável no PST + arcCount atual
+   * Retorna null quando o item não está mais nesta pasta — falhar é melhor
+   * do que agir sobre a mensagem errada.
+   */
+  private indexByStableId(folderId: string, stableId: string): number | null {
+    if (stableId.startsWith('a|')) {
+      const rest = stableId.slice(2);
+      const slash = rest.lastIndexOf('/');
+      if (slash < 0) return null;
+      const rel = rest.slice(0, slash);
+      const file = rest.slice(slash + 1);
+      // Garante que o .eml pertence a ESTA pasta — um item movido tem o rel
+      // da pasta antiga no stableId e não pode resolver aqui.
+      const expected = folderId.startsWith('arc:')
+        ? this.canonShadow(folderId.slice(4))
+        : (this.nodeFor(folderId)?.archiveName
+            ? this.canonShadow(this.nodeFor(folderId)!.archiveName!)
+            : null);
+      if (!expected || rel !== expected) return null;
+      const i = this.archiveFiles(`arc:${rel}`).indexOf(file);
+      return i < 0 ? null : i;
+    }
+    if (stableId.startsWith('p|')) {
+      const cut = stableId.lastIndexOf('|');
+      const raw = Number(stableId.slice(cut + 1));
+      // A pasta gravada no stableId precisa ser a pasta consultada — itens
+      // do PST só existem em pastas mescladas (nunca em arc:).
+      if (folderId.startsWith('arc:') || stableId.slice(2, cut) !== folderId) return null;
+      if (!Number.isFinite(raw) || raw < 0) return null;
+      return this.mergedArcCount(folderId) + raw;
+    }
+    return null;
+  }
+
+  /**
+   * Índice efetivo de uma chamada: quando o emissor informou o stableId do
+   * item (sempre que veio de um ItemSummary), resolve para a posição atual
+   * — imune a entregas/exclusões que deslocaram índices depois da listagem.
+   */
+  private idxFor(folderId: string, index: number, stableId?: string): number {
+    if (!stableId) return index;
+    const resolved = this.indexByStableId(folderId, stableId);
+    if (resolved === null) {
+      throw new Error('A mensagem não está mais nesta pasta — a lista foi atualizada, selecione-a novamente.');
+    }
+    return resolved;
+  }
+
   /** Lista itens de uma pasta. Retorna em ordem reversa (mais recentes primeiro). */
   async getItems(folderId: string, offset = 0, limit = 500): Promise<ItemSummary[]> {
     this.requireOpen();
@@ -1483,8 +1544,9 @@ export class PstService {
     );
   }
 
-  async getItem(folderId: string, index: number): Promise<ItemDetail> {
+  async getItem(folderId: string, index: number, stableId?: string): Promise<ItemDetail> {
     this.requireOpen();
+    index = this.idxFor(folderId, index, stableId);
     if (folderId.startsWith('arc:')) {
       const file = this.archiveFiles(folderId)[index];
       if (!file) throw new Error(`Item ${index} não encontrado na pasta ${folderId}`);
@@ -1534,7 +1596,13 @@ export class PstService {
     };
   }
 
-  async getAttachmentData(folderId: string, index: number, attachIndex: number): Promise<AttachmentData> {
+  async getAttachmentData(
+    folderId: string,
+    index: number,
+    attachIndex: number,
+    stableId?: string,
+  ): Promise<AttachmentData> {
+    index = this.idxFor(folderId, index, stableId);
     if (folderId.startsWith('arc:')) {
       return this.arcAttachment(folderId, index, attachIndex);
     }
@@ -1573,8 +1641,9 @@ export class PstService {
   // ---------- Mover itens (drag & drop entre pastas) ----------
 
   /** Exporta um item como .eml — para pasta local lê o arquivo; para PST recompõe o MIME. */
-  async exportItemEml(folderId: string, index: number): Promise<Buffer> {
+  async exportItemEml(folderId: string, index: number, stableId?: string): Promise<Buffer> {
     this.requireOpen();
+    index = this.idxFor(folderId, index, stableId);
     if (folderId.startsWith('arc:')) {
       const file = this.archiveFiles(folderId)[index];
       if (!file) throw new Error('Item não encontrado');
@@ -1589,11 +1658,11 @@ export class PstService {
       return readFileSync(join(this.archiveDirFor(arcId), file));
     }
     // Item do PST: recomponhe o MIME a partir do detalhe + anexos
-    const d = await this.getItem(folderId, index);
+    const d = await this.getItem(folderId, index, stableId);
     const atts: Array<{ filename: string; content: Buffer; contentType?: string }> = [];
     for (const a of d.attachments) {
       try {
-        const ad = await this.getAttachmentData(folderId, index, a.index);
+        const ad = await this.getAttachmentData(folderId, index, a.index, stableId);
         if (ad.dataBase64) {
           atts.push({
             filename: ad.filename,
@@ -1832,8 +1901,10 @@ export class PstService {
     folderId: string,
     index: number,
     item: NewSpecialItem,
+    stableId?: string,
   ): Promise<NewSpecialItem> {
     this.requireOpen();
+    index = this.idxFor(folderId, index, stableId);
     let arcId: string;
     if (folderId.startsWith('arc:')) {
       arcId = folderId;
@@ -1948,7 +2019,8 @@ export class PstService {
   }
 
   /** Estado de leitura efetivo de um item — local (readstate) ou PST (+override). */
-  isItemRead(folderId: string, index: number): boolean {
+  isItemRead(folderId: string, index: number, stableId?: string): boolean {
+    index = this.idxFor(folderId, index, stableId);
     let arcId = folderId;
     if (folderId.startsWith('arc:')) {
       const f = this.archiveFiles(folderId)[index];
@@ -1971,14 +2043,21 @@ export class PstService {
   }
 
   /** O item é um .eml local (pasta arc: ou parte mesclada de pasta do PST). */
-  isLocalItem(folderId: string, index: number): boolean {
+  isLocalItem(folderId: string, index: number, stableId?: string): boolean {
     if (folderId.startsWith('arc:')) return true;
+    // O prefixo do stableId já diz a origem — sem nem consultar o disco.
+    if (stableId) {
+      if (stableId.startsWith('a|')) return true;
+      if (stableId.startsWith('p|')) return false;
+    }
+    index = this.idxFor(folderId, index, stableId);
     return index < this.mergedArcCount(folderId);
   }
 
   /** Remove um item. Item local é apagado do disco; item gravado no PST é
    *  ocultado (exclusão lógica — o arquivo é somente leitura). */
-  deleteItem(folderId: string, index: number): void {
+  deleteItem(folderId: string, index: number, stableId?: string): void {
+    index = this.idxFor(folderId, index, stableId);
     let arcId = folderId;
     if (!folderId.startsWith('arc:')) {
       if (!this.isLocalItem(folderId, index)) {
@@ -2410,6 +2489,7 @@ export class PstService {
                   }
                   s.categories = this.catsOfKey(`a|${arcId.slice(4)}/${files[i]}`);
                   s.local = true;
+                  s.stableId = `a|${this.canonShadow(arcId.slice(4))}/${files[i]}`;
                   results.push({ folderId: node.id, folderName: node.name, item: s });
                 }
               } catch {
@@ -2448,6 +2528,7 @@ export class PstService {
                 const ov = this.pstReadOverride(node.id, i);
                 if (ov !== undefined) s.isRead = ov;
                 s.index = arcCountIdx(node, i);
+                s.stableId = `p|${node.id}|${i}`;
                 s.categories = this.catsOfKey(key);
                 results.push({ folderId: node.id, folderName: node.name, item: s });
               }
@@ -2480,6 +2561,7 @@ export class PstService {
                   const ov = this.pstReadOverride(node.id, i);
                   if (ov !== undefined) s.isRead = ov;
                   s.index = arcCountIdx(node, i);
+                  s.stableId = `p|${node.id}|${i}`;
                   s.categories = this.catsOfKey(`p|${node.id}|${i}`);
                   results.push({ folderId: node.id, folderName: node.name, item: s });
                 }

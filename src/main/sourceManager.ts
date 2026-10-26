@@ -166,6 +166,7 @@ export class SourceManager {
     index: number,
     dstId: string,
     dstFolderId: string,
+    stableId?: string,
   ): Promise<'movido' | 'copiado'> {
     const src = this.backend(srcId);
     const dst = this.backend(dstId);
@@ -186,16 +187,17 @@ export class SourceManager {
     // servidor; só remove a origem depois que o upload terminou. Isso permite
     // migrar .eml/PST para uma conta online e também mover entre contas.
     if (dstImap) {
+      // Estado de leitura ANTES do export — o getItem interno marca lido.
+      const wasRead = src instanceof PstService
+        ? src.isItemRead?.(srcFolderId, index, stableId)
+        : true;
       const raw = srcImap
         ? await src.downloadRaw(srcFolderId, index)
-        : await (src as PstService).exportItemEml(srcFolderId, index);
-      const wasRead = src instanceof PstService
-        ? src.isItemRead?.(srcFolderId, index)
-        : true;
+        : await (src as PstService).exportItemEml(srcFolderId, index, stableId);
       await dst.appendItem(dstFolderId, raw, wasRead);
       if (srcImap) await src.expungeItem(srcFolderId, index);
-      else if ((src as PstService).isLocalItem(srcFolderId, index)) (src as PstService).deleteItem(srcFolderId, index);
-      else (src as PstService).hideItem(srcFolderId, index);
+      else if ((src as PstService).isLocalItem(srcFolderId, index, stableId)) (src as PstService).deleteItem(srcFolderId, index, stableId);
+      else (src as PstService).hideItem(srcFolderId, index, stableId);
       return 'movido';
     }
     if (srcImap) {
@@ -207,19 +209,19 @@ export class SourceManager {
     // Lê o estado de leitura ANTES do export — para itens do PST o export
     // já marca como lido (efeito colateral de getItem). Assim um item não
     // lido deletado continua não lido na lixeira, e vice-versa.
-    const wasRead = src.isItemRead ? src.isItemRead(srcFolderId, index) : undefined;
-    const cats = src.getItemCategories?.(srcFolderId, index) ?? [];
-    const raw = await src.exportItemEml(srcFolderId, index);
+    const wasRead = src.isItemRead ? src.isItemRead(srcFolderId, index, stableId) : undefined;
+    const cats = src.getItemCategories?.(srcFolderId, index, stableId) ?? [];
+    const raw = await src.exportItemEml(srcFolderId, index, stableId);
     const name = await dst.importItemEml(dstFolderId, raw, wasRead);
     if (cats.length) dst.setItemCategoriesByFile?.(dstFolderId, name, cats);
-    if (!src.isLocalItem(srcFolderId, index)) {
+    if (!src.isLocalItem(srcFolderId, index, stableId)) {
       // Item gravado no PST: copia para o destino e oculta o original —
       // na interface parece um "mover" de verdade (o .pst não pode ser
       // modificado fisicamente, então a exclusão é lógica).
-      src.hideItem(srcFolderId, index);
+      src.hideItem(srcFolderId, index, stableId);
       return 'movido';
     }
-    src.deleteItem(srcFolderId, index);
+    src.deleteItem(srcFolderId, index, stableId);
     return 'movido';
   }
 
@@ -234,15 +236,25 @@ export class SourceManager {
     indexes: number[],
     dstId: string,
     dstFolderId: string,
+    stableIds?: (string | undefined)[],
   ): Promise<number> {
     const src = this.backend(srcId);
     const dst = this.backend(dstId);
+    // Pares (índice, stableId) — o stableId resolve a posição ATUAL a cada
+    // passo, então exclusões/entregas no meio do lote não desviam o alvo.
+    const pairs = indexes
+      .map((index, i) => ({ index, stableId: stableIds?.[i] }))
+      .sort((a, b) => b.index - a.index);
     if (src instanceof ImapMailSource || dst instanceof ImapMailSource) {
       let moved = 0;
       const run = async () => {
-        for (const ix of [...indexes].sort((a, b) => b - a)) {
-          await this.moveItem(srcId, srcFolderId, ix, dstId, dstFolderId);
-          moved++;
+        for (const p of pairs) {
+          try {
+            await this.moveItem(srcId, srcFolderId, p.index, dstId, dstFolderId, p.stableId);
+            moved++;
+          } catch {
+            // item sumiu — segue com os demais
+          }
         }
       };
       // Origem local → batch grava readstate/hidden uma vez no fim do lote,
@@ -260,9 +272,9 @@ export class SourceManager {
     // ainda serão processados — e itens do PST (índices mais altos) são
     // resolvidos antes do arcCount encolher com as remoções de .eml locais.
     const run = async () => {
-      for (const ix of [...indexes].sort((a, b) => b - a)) {
+      for (const p of pairs) {
         try {
-          await this.moveItem(srcId, srcFolderId, ix, dstId, dstFolderId);
+          await this.moveItem(srcId, srcFolderId, p.index, dstId, dstFolderId, p.stableId);
           moved++;
         } catch {
           // item sumiu/índice já deslocado — segue com os demais
@@ -274,15 +286,23 @@ export class SourceManager {
   }
 
   /** Exclui vários itens de uma pasta num lote (mesma economia de I/O). */
-  async deleteItems(sourceId: string, folderId: string, indexes: number[]): Promise<number> {
+  async deleteItems(
+    sourceId: string,
+    folderId: string,
+    indexes: number[],
+    stableIds?: (string | undefined)[],
+  ): Promise<number> {
     const svc = this.backend(sourceId);
+    const pairs = indexes
+      .map((index, i) => ({ index, stableId: stableIds?.[i] }))
+      .sort((a, b) => b.index - a.index);
     // Conta IMAP: exclusão vai para Itens Excluídos do servidor (ou expurgo
     // quando a pasta não existe) — o índice do item é o UID da mensagem.
     if (svc instanceof ImapMailSource) {
       let n = 0;
-      for (const ix of [...indexes].sort((a, b) => b - a)) {
+      for (const p of pairs) {
         try {
-          await svc.deleteItem(folderId, ix);
+          await svc.deleteItem(folderId, p.index);
           n++;
         } catch {
           // mensagem já removida no servidor — segue com as demais
@@ -295,9 +315,9 @@ export class SourceManager {
     }
     let n = 0;
     await svc.batch(() => {
-      for (const ix of [...indexes].sort((a, b) => b - a)) {
+      for (const p of pairs) {
         try {
-          svc.deleteItem(folderId, ix);
+          svc.deleteItem(folderId, p.index, p.stableId);
           n++;
         } catch {
           // item já inexistente — segue
@@ -381,15 +401,15 @@ export class SourceManager {
     const items = await Promise.resolve(src.getItems(node.id, 0, 1000000));
     const copyAll = async () => {
       for (const it of items) {
-        const wasRead = src.isItemRead ? src.isItemRead(node.id, it.index) : true;
+        const wasRead = src.isItemRead ? src.isItemRead(node.id, it.index, it.stableId) : true;
         const raw = src instanceof ImapMailSource
           ? await src.downloadRaw(node.id, it.index)
-          : await (src as PstService).exportItemEml(node.id, it.index);
+          : await (src as PstService).exportItemEml(node.id, it.index, it.stableId);
         if (dstImap) {
           await (dst as ImapMailSource).appendItem(newId, raw, wasRead ?? true);
         } else {
           const fname = await (dst as PstService).importItemEml(newId, raw, wasRead);
-          const cats = (src as PstService).getItemCategories?.(node.id, it.index) ?? [];
+          const cats = (src as PstService).getItemCategories?.(node.id, it.index, it.stableId) ?? [];
           if (cats.length) (dst as PstService).setItemCategoriesByFile?.(newId, fname, cats);
         }
       }
@@ -419,12 +439,13 @@ export class SourceManager {
     folderId: string,
     index: number,
     item: NewSpecialItem,
+    stableId?: string,
   ): Promise<{ tree: FolderNode[]; item: NewSpecialItem }> {
     const svc = this.backend(sourceId);
     if (!(svc instanceof PstService)) {
       throw new Error('Editar itens só é suportado em arquivos de dados');
     }
-    const merged = await svc.updateSpecialItem(folderId, index, item);
+    const merged = await svc.updateSpecialItem(folderId, index, item, stableId);
     return { tree: svc.getFolderTree(), item: merged };
   }
 
@@ -513,10 +534,16 @@ export class SourceManager {
   }
 
   /** Define lido/não-lido — local grava na base, IMAP muda a flag \Seen no servidor. */
-  async setItemRead(sourceId: string, folderId: string, index: number, read: boolean): Promise<void> {
+  async setItemRead(
+    sourceId: string,
+    folderId: string,
+    index: number,
+    read: boolean,
+    stableId?: string,
+  ): Promise<void> {
     const svc = this.backend(sourceId);
     if (svc instanceof PstService) {
-      svc.setItemRead(folderId, index, read);
+      svc.setItemRead(folderId, index, read, stableId);
       return;
     }
     if (svc instanceof ImapMailSource) {

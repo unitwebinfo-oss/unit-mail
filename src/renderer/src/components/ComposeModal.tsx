@@ -23,10 +23,10 @@ export interface ComposeDraft {
   /** Anexos já presentes (rascunho reaberto — cópias temporárias). */
   attachmentPaths?: string[];
   /** Rascunho salvo em disco — excluído de Rascunhos após enviar/regravar. */
-  draftRef?: { sourceId: string; folderId: string; index: number };
+  draftRef?: { sourceId: string; folderId: string; index: number; stableId?: string };
   /** Item original respondido/encaminhado — após o envio, o app marca
    *  \Answered/$Forwarded no servidor (ícone ↩/→ igual ao Outlook). */
-  replyRef?: { sourceId: string; folderId: string; index: number };
+  replyRef?: { sourceId: string; folderId: string; index: number; stableId?: string };
 }
 
 interface ComposeModalProps {
@@ -366,7 +366,7 @@ export function ComposeModal({ draft, accounts, onClose, onSent, windowed }: Com
       // Rascunho enviado → o .eml sai de Rascunhos (como no Outlook)
       if (draft.draftRef) {
         const r = draft.draftRef;
-        void window.outlook.deleteItem(r.sourceId, r.folderId, r.index).catch(() => {});
+        void window.outlook.deleteItem(r.sourceId, r.folderId, r.index, r.stableId).catch(() => {});
       }
       onSent();
     } catch (e) {
@@ -401,7 +401,7 @@ export function ComposeModal({ draft, accounts, onClose, onSent, windowed }: Com
       // Regravar um rascunho aberto remove a versão anterior da pasta
       if (draft.draftRef) {
         const r = draft.draftRef;
-        void window.outlook.deleteItem(r.sourceId, r.folderId, r.index).catch(() => {});
+        void window.outlook.deleteItem(r.sourceId, r.folderId, r.index, r.stableId).catch(() => {});
       }
       // Avisa a janela principal para atualizar a lista de Rascunhos
       void window.outlook.composeNotifySent?.().catch(() => {});

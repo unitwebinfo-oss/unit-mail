@@ -427,7 +427,7 @@ export interface ComposeInput {
   draft?: boolean;
   /** Item original de uma resposta/encaminhamento — após enviar, o app
    *  marca \Answered/$Forwarded no servidor (ícone ↩/→ como no Outlook). */
-  replyRef?: { sourceId: string; folderId: string; index: number };
+  replyRef?: { sourceId: string; folderId: string; index: number; stableId?: string };
 }
 
 /** Resultado da criação de compromisso/contato/tarefa + envio de convites. */
@@ -461,7 +461,7 @@ export interface ComposeDraftPayload {
   attachmentPaths?: string[];
   /** Referência do rascunho salvo — após enviar/regravar, o .eml original sai
    *  de Rascunhos (como o Outlook move o rascunho ao enviar). */
-  draftRef?: { sourceId: string; folderId: string; index: number };
+  draftRef?: { sourceId: string; folderId: string; index: number; stableId?: string };
 }
 
 // ===================== Regras de recebimento =====================

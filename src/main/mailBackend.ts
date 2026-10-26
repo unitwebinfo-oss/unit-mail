@@ -15,11 +15,17 @@ export interface MailBackend {
   getFolderTree(): FolderNode[] | Promise<FolderNode[]>;
   getItemCount(folderId: string): number | Promise<number>;
   getItems(folderId: string, offset: number, limit: number): ItemSummary[] | Promise<ItemSummary[]>;
-  getItem(folderId: string, index: number): ItemDetail | Promise<ItemDetail>;
+  /**
+   * `stableId` (quando informado) resolve o item pela identidade estável —
+   * `index` é posicional e desloca quando a pasta ganha/perde itens entre a
+   * listagem e a chamada. Implementações devem preferi-lo sempre que vier.
+   */
+  getItem(folderId: string, index: number, stableId?: string): ItemDetail | Promise<ItemDetail>;
   getAttachmentData(
     folderId: string,
     index: number,
     attachIndex: number,
+    stableId?: string,
   ): AttachmentData | Promise<AttachmentData>;
   /**
    * Busca na fonte. `onBatch` (opcional) recebe lotes de hits conforme as
@@ -34,6 +40,6 @@ export interface MailBackend {
     folderId?: string,
   ): SearchResult[] | Promise<SearchResult[]>;
   /** Estado de leitura de um item (bases locais/PST). */
-  isItemRead?(folderId: string, index: number): boolean;
+  isItemRead?(folderId: string, index: number, stableId?: string): boolean;
   close(): void | Promise<void>;
 }

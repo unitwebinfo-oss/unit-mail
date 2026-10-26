@@ -573,7 +573,9 @@ async function checkReminders(): Promise<void> {
         if (it.reminderSet === false) continue;
         const minBefore = it.reminderMinutes ?? 15;
         const remindAt = start - minBefore * 60000;
-        const key = `${src.id}|${cal.id}|${it.index}|${it.startTime}`;
+        // stableId na chave — o índice posicional muda quando a pasta
+        // recebe itens, o que re-disparava ou perdia lembretes.
+        const key = `${src.id}|${cal.id}|${it.stableId ?? it.index}|${it.startTime}`;
         if (remindedKeys.has(key) || dismissedReminders.has(key)) continue;
         // "Adiar": dentro da janela de soneca, pula; ao expirar, toca de novo
         const snz = snoozedUntil.get(key);
@@ -606,6 +608,7 @@ async function checkReminders(): Promise<void> {
             sourceId: src.id,
             folderId: cal.id,
             index: it.index,
+            stableId: it.stableId,
           });
         }
       }
@@ -1304,8 +1307,15 @@ function registerIpc(): void {
 
   ipcMain.handle(
     'items:move',
-    (_e, srcId: string, srcFolderId: string, index: number, dstId: string, dstFolderId: string) =>
-      sourceManager.moveItem(srcId, srcFolderId, index, dstId, dstFolderId),
+    (
+      _e,
+      srcId: string,
+      srcFolderId: string,
+      index: number,
+      dstId: string,
+      dstFolderId: string,
+      stableId?: string,
+    ) => sourceManager.moveItem(srcId, srcFolderId, index, dstId, dstFolderId, stableId),
   );
 
   // Em lote: excluir/mover centenas de itens numa chamada — estados em disco
@@ -1319,30 +1329,37 @@ function registerIpc(): void {
       indexes: number[],
       dstId: string,
       dstFolderId: string,
-    ) => sourceManager.moveItems(srcId, srcFolderId, indexes, dstId, dstFolderId),
+      stableIds?: (string | undefined)[],
+    ) => sourceManager.moveItems(srcId, srcFolderId, indexes, dstId, dstFolderId, stableIds),
   );
 
-  ipcMain.handle('items:isLocal', (_e, sourceId: string, folderId: string, index: number) => {
-    const svc = sourceManager.backend(sourceId);
-    const pst = svc as import('./pstService').PstService;
-    if (typeof pst.isLocalItem !== 'function') return false;
-    return pst.isLocalItem(folderId, index);
-  });
+  ipcMain.handle(
+    'items:isLocal',
+    (_e, sourceId: string, folderId: string, index: number, stableId?: string) => {
+      const svc = sourceManager.backend(sourceId);
+      const pst = svc as import('./pstService').PstService;
+      if (typeof pst.isLocalItem !== 'function') return false;
+      return pst.isLocalItem(folderId, index, stableId);
+    },
+  );
 
-  ipcMain.handle('items:delete', async (_e, sourceId: string, folderId: string, index: number) => {
-    const svc = sourceManager.backend(sourceId);
-    const pst = svc as import('./pstService').PstService;
-    if (typeof pst.deleteItem !== 'function') {
-      throw new Error('Excluir só é suportado em arquivos de dados (PST/base local)');
-    }
-    await pst.deleteItem(folderId, index);
-    return true;
-  });
+  ipcMain.handle(
+    'items:delete',
+    async (_e, sourceId: string, folderId: string, index: number, stableId?: string) => {
+      const svc = sourceManager.backend(sourceId);
+      const pst = svc as import('./pstService').PstService;
+      if (typeof pst.deleteItem !== 'function') {
+        throw new Error('Excluir só é suportado em arquivos de dados (PST/base local)');
+      }
+      await pst.deleteItem(folderId, index, stableId);
+      return true;
+    },
+  );
 
   ipcMain.handle(
     'items:deleteMany',
-    (_e, sourceId: string, folderId: string, indexes: number[]) =>
-      sourceManager.deleteItems(sourceId, folderId, indexes),
+    (_e, sourceId: string, folderId: string, indexes: number[], stableIds?: (string | undefined)[]) =>
+      sourceManager.deleteItems(sourceId, folderId, indexes, stableIds),
   );
 
   // ---------- Categorias (Categorizar) ----------
@@ -1356,27 +1373,34 @@ function registerIpc(): void {
   );
   ipcMain.handle(
     'items:getCategories',
-    (_e, sourceId: string, folderId: string, index: number) => {
+    (_e, sourceId: string, folderId: string, index: number, stableId?: string) => {
       const svc = sourceManager.backend(sourceId);
       const pst = svc as import('./pstService').PstService;
       if (typeof pst.getItemCategories !== 'function') return [];
-      return pst.getItemCategories(folderId, index);
+      return pst.getItemCategories(folderId, index, stableId);
     },
   );
   ipcMain.handle(
     'items:setCategories',
-    (_e, sourceId: string, folderId: string, indexes: number[], cats: string[]) => {
+    (
+      _e,
+      sourceId: string,
+      folderId: string,
+      indexes: number[],
+      cats: string[],
+      stableIds?: (string | undefined)[],
+    ) => {
       const svc = sourceManager.backend(sourceId);
       const pst = svc as import('./pstService').PstService;
       if (typeof pst.setItemCategories !== 'function') return false;
       pst.batch(() => {
-        for (const ix of indexes) {
+        indexes.forEach((ix, i) => {
           try {
-            pst.setItemCategories(folderId, ix, cats);
+            pst.setItemCategories(folderId, ix, cats, stableIds?.[i]);
           } catch {
             // item sumiu — segue com os demais
           }
-        }
+        });
       });
       return true;
     },
@@ -1436,8 +1460,9 @@ function registerIpc(): void {
       folderId: string,
       index: number,
       item: import('../shared/types').NewSpecialItem,
+      stableId?: string,
     ): Promise<import('../shared/types').CreateSpecialResult> => {
-      const res = await sourceManager.updateSpecialItem(sourceId, folderId, index, item);
+      const res = await sourceManager.updateSpecialItem(sourceId, folderId, index, item, stableId);
       if (res.item.kind === 'appt') invalidateCalendarUids();
       const invite = await sendApptInvites(sourceId, res.item);
       return { tree: res.tree, invite };
@@ -1589,6 +1614,7 @@ function registerIpc(): void {
               it.index,
               target.id,
               `arc:${rule.targetFolder}`,
+              it.stableId,
             );
             applied++;
           } catch {
@@ -2019,6 +2045,7 @@ function registerIpc(): void {
         sourceId: string;
         folderId: string;
         index: number;
+        stableId?: string;
         accountId: string;
         response: 'accept' | 'decline' | 'counter';
         newStart?: string;
@@ -2026,7 +2053,7 @@ function registerIpc(): void {
       },
     ) => {
       const svc = sourceManager.backend(input.sourceId);
-      const detail = await svc.getItem(input.folderId, input.index);
+      const detail = await svc.getItem(input.folderId, input.index, input.stableId);
       const inv = detail.invite;
       if (!inv) throw new Error('A mensagem não é um convite de reunião');
       const account = accountStore.getFull(input.accountId);
@@ -2105,6 +2132,7 @@ function registerIpc(): void {
             input.index,
             input.sourceId,
             `arc:${delName}`,
+            input.stableId,
           );
         }
       } catch {
@@ -2264,8 +2292,8 @@ function registerIpc(): void {
   // Arquivo de dados principal — destino padrão de mensagens sem regra
   ipcMain.handle(
     'items:setRead',
-    async (_e, sourceId: string, folderId: string, index: number, read: boolean) => {
-      await sourceManager.setItemRead(sourceId, folderId, index, read);
+    async (_e, sourceId: string, folderId: string, index: number, read: boolean, stableId?: string) => {
+      await sourceManager.setItemRead(sourceId, folderId, index, read, stableId);
       return true;
     },
   );
@@ -2479,8 +2507,10 @@ function registerIpc(): void {
       sourceManager.backend(sourceId).getItems(folderId, offset, limit),
   );
 
-  ipcMain.handle('mail:item', async (_e, sourceId: string, folderId: string, index: number) => {
-    const d = await sourceManager.backend(sourceId).getItem(folderId, index);
+  ipcMain.handle(
+    'mail:item',
+    async (_e, sourceId: string, folderId: string, index: number, stableId?: string) => {
+    const d = await sourceManager.backend(sourceId).getItem(folderId, index, stableId);
     // Convite já respondido → barra mostra o estado, não os botões.
     if (d?.invite) {
       loadRespondedInvites();
@@ -2560,9 +2590,9 @@ function registerIpc(): void {
   // anexos extraídos para arquivos temporários (reanexados no envio).
   ipcMain.handle(
     'mail:openDraft',
-    async (_e, sourceId: string, folderId: string, index: number) => {
+    async (_e, sourceId: string, folderId: string, index: number, stableId?: string) => {
       const svc = sourceManager.backend(sourceId);
-      const d = await svc.getItem(folderId, index);
+      const d = await svc.getItem(folderId, index, stableId);
       if (!d) return null;
       // Limpa cópias temp de rascunhos abertos há mais de um dia
       const tmpRoot = join(tmpdir(), 'unitmail-drafts');
@@ -2578,7 +2608,7 @@ function registerIpc(): void {
       const dir = join(tmpRoot, `${Date.now()}-${randomUUID().slice(0, 8)}`);
       for (const a of d.attachments || []) {
         try {
-          const data = await svc.getAttachmentData(folderId, index, a.index);
+          const data = await svc.getAttachmentData(folderId, index, a.index, stableId);
           mkdirSync(dir, { recursive: true });
           const p = join(dir, safeFsName(a.filename || `anexo-${a.index}`));
           writeFileSync(p, Buffer.from(data.dataBase64, 'base64'));
@@ -2608,7 +2638,7 @@ function registerIpc(): void {
         // na mesma thread ao enviar.
         inReplyTo: hdrVal('in-reply-to') || undefined,
         references: hdrVal('references') || undefined,
-        draftRef: { sourceId, folderId, index },
+        draftRef: { sourceId, folderId, index, stableId: d.stableId },
       };
       return payload;
     },
@@ -2625,8 +2655,8 @@ function registerIpc(): void {
 
   ipcMain.handle(
     'mail:attachmentData',
-    (_e, sourceId: string, folderId: string, index: number, attachIndex: number) =>
-      sourceManager.backend(sourceId).getAttachmentData(folderId, index, attachIndex),
+    (_e, sourceId: string, folderId: string, index: number, attachIndex: number, stableId?: string) =>
+      sourceManager.backend(sourceId).getAttachmentData(folderId, index, attachIndex, stableId),
   );
 
   // ---------- Salvar como (.eml) e Imprimir ----------
@@ -2635,13 +2665,13 @@ function registerIpc(): void {
    *  PST (recomponhe o MIME) e locais (copia o arquivo). */
   ipcMain.handle(
     'items:saveAs',
-    async (_e, sourceId: string, folderId: string, index: number) => {
+    async (_e, sourceId: string, folderId: string, index: number, stableId?: string) => {
       const svc = sourceManager.backend(sourceId);
       const pst = svc as import('./pstService').PstService;
       if (typeof pst.exportItemEml !== 'function') {
         throw new Error('Salvar como só é suportado em arquivos de dados');
       }
-      const detail = await svc.getItem(folderId, index);
+      const detail = await svc.getItem(folderId, index, stableId);
       const safe = safeFsName(detail.subject || 'mensagem', 'mensagem').slice(0, 80);
       const res = await dialog.showSaveDialog({
         title: 'Salvar mensagem como',
@@ -2649,7 +2679,7 @@ function registerIpc(): void {
         filters: [{ name: 'Mensagem de email', extensions: ['eml'] }],
       });
       if (res.canceled || !res.filePath) return null;
-      const raw = await pst.exportItemEml(folderId, index);
+      const raw = await pst.exportItemEml(folderId, index, stableId);
       await writeFile(res.filePath, raw);
       return res.filePath;
     },
@@ -2658,9 +2688,9 @@ function registerIpc(): void {
   /** Imprime a mensagem aberta numa janela oculta do Electron. */
   ipcMain.handle(
     'items:print',
-    async (_e, sourceId: string, folderId: string, index: number) => {
+    async (_e, sourceId: string, folderId: string, index: number, stableId?: string) => {
       const svc = sourceManager.backend(sourceId);
-      const detail = await svc.getItem(folderId, index);
+      const detail = await svc.getItem(folderId, index, stableId);
       const esc = (s: string) =>
         s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
       const when = detail.deliveryTime || detail.sentTime;
@@ -2699,8 +2729,8 @@ function registerIpc(): void {
 
   ipcMain.handle(
     'mail:saveAttachment',
-    async (_e, sourceId: string, folderId: string, index: number, attachIndex: number) => {
-      const data = await sourceManager.backend(sourceId).getAttachmentData(folderId, index, attachIndex);
+    async (_e, sourceId: string, folderId: string, index: number, attachIndex: number, stableId?: string) => {
+      const data = await sourceManager.backend(sourceId).getAttachmentData(folderId, index, attachIndex, stableId);
       if (!data.dataBase64) throw new Error('Anexo vazio ou não suportado');
       const res = await dialog.showSaveDialog({ title: 'Salvar anexo', defaultPath: data.filename });
       if (res.canceled || !res.filePath) return null;
@@ -2713,8 +2743,8 @@ function registerIpc(): void {
   // aplicativo padrão do SO (como o "Abrir" do Outlook).
   ipcMain.handle(
     'mail:openAttachment',
-    async (_e, sourceId: string, folderId: string, index: number, attachIndex: number) => {
-      const data = await sourceManager.backend(sourceId).getAttachmentData(folderId, index, attachIndex);
+    async (_e, sourceId: string, folderId: string, index: number, attachIndex: number, stableId?: string) => {
+      const data = await sourceManager.backend(sourceId).getAttachmentData(folderId, index, attachIndex, stableId);
       if (!data.dataBase64) throw new Error('Anexo vazio ou não suportado');
       const dir = join(app.getPath('temp'), 'UnitMail-Attachments');
       mkdirSync(dir, { recursive: true });
@@ -2730,9 +2760,9 @@ function registerIpc(): void {
   // "Salvar todos": escolhe uma pasta e grava todos os anexos da mensagem.
   ipcMain.handle(
     'mail:saveAllAttachments',
-    async (_e, sourceId: string, folderId: string, index: number) => {
+    async (_e, sourceId: string, folderId: string, index: number, stableId?: string) => {
       const svc = sourceManager.backend(sourceId);
-      const detail = await svc.getItem(folderId, index);
+      const detail = await svc.getItem(folderId, index, stableId);
       if (!detail.attachments.length) return null;
       const res = await dialog.showOpenDialog({
         title: 'Salvar todos os anexos em…',
@@ -2743,7 +2773,7 @@ function registerIpc(): void {
       let saved = 0;
       for (const a of detail.attachments) {
         try {
-          const data = await svc.getAttachmentData(folderId, index, a.index);
+          const data = await svc.getAttachmentData(folderId, index, a.index, stableId);
           if (!data.dataBase64) continue;
           const safeName = safeFsName(data.filename || `anexo-${a.index}`, `anexo-${a.index}`);
           await writeFile(join(dir, safeName), Buffer.from(data.dataBase64, 'base64'));

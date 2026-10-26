@@ -56,6 +56,7 @@ export interface OutlookApi {
     sourceId: string,
     folderId: string,
     index: number,
+    stableId?: string,
   ): Promise<ComposeDraftPayload | null>;
   pickAttachments(): Promise<string[]>;
   pickImage(): Promise<string | null>;
@@ -155,27 +156,51 @@ export interface OutlookApi {
     index: number,
     dstId: string,
     dstFolderId: string,
+    stableId?: string,
   ): Promise<'movido' | 'copiado'>;
-  isLocalItem(sourceId: string, folderId: string, index: number): Promise<boolean>;
-  deleteItem(sourceId: string, folderId: string, index: number): Promise<boolean>;
+  isLocalItem(sourceId: string, folderId: string, index: number, stableId?: string): Promise<boolean>;
+  deleteItem(sourceId: string, folderId: string, index: number, stableId?: string): Promise<boolean>;
   /** Em lote: excluir/mover centenas de itens numa chamada só. Retorna quantos. */
-  deleteItems(sourceId: string, folderId: string, indexes: number[]): Promise<number>;
+  deleteItems(
+    sourceId: string,
+    folderId: string,
+    indexes: number[],
+    stableIds?: (string | undefined)[],
+  ): Promise<number>;
   moveItems(
     srcId: string,
     srcFolderId: string,
     indexes: number[],
     dstId: string,
     dstFolderId: string,
+    stableIds?: (string | undefined)[],
   ): Promise<number>;
   /** Marca item como lido/não lido (só itens locais — PST é somente leitura). */
-  setItemRead(sourceId: string, folderId: string, index: number, read: boolean): Promise<boolean>;
+  setItemRead(
+    sourceId: string,
+    folderId: string,
+    index: number,
+    read: boolean,
+    stableId?: string,
+  ): Promise<boolean>;
   /** Lista-mestre de categorias coloridas (Categorizar). */
   getCategories(): Promise<MailCategory[]>;
   saveCategories(cats: MailCategory[]): Promise<boolean>;
   /** Categorias aplicadas a um item. */
-  getItemCategories(sourceId: string, folderId: string, index: number): Promise<string[]>;
+  getItemCategories(
+    sourceId: string,
+    folderId: string,
+    index: number,
+    stableId?: string,
+  ): Promise<string[]>;
   /** Substitui as categorias de vários itens numa chamada (lote). */
-  setItemCategories(sourceId: string, folderId: string, indexes: number[], cats: string[]): Promise<boolean>;
+  setItemCategories(
+    sourceId: string,
+    folderId: string,
+    indexes: number[],
+    cats: string[],
+    stableIds?: (string | undefined)[],
+  ): Promise<boolean>;
   /** Move pasta — mesma base reparenta, outra base copia tudo e exclui a
    *  origem. Retorna as árvores atualizadas por fonte. */
   moveFolder(
@@ -194,6 +219,7 @@ export interface OutlookApi {
     folderId: string,
     index: number,
     item: NewSpecialItem,
+    stableId?: string,
   ): Promise<CreateSpecialResult>;
   renameFolder(sourceId: string, folderId: string, newName: string): Promise<FolderNode[]>;
   deleteFolder(sourceId: string, folderId: string): Promise<FolderNode[]>;
@@ -215,6 +241,7 @@ export interface OutlookApi {
     sourceId: string;
     folderId: string;
     index: number;
+    stableId?: string;
     accountId: string;
     response: 'accept' | 'decline' | 'counter';
     newStart?: string;
@@ -249,6 +276,7 @@ export interface OutlookApi {
       sourceId: string;
       folderId: string;
       index: number;
+      stableId?: string;
     }) => void,
   ): () => void;
   /** "Adiar" do modal de lembrete — dispara de novo após N minutos. */
@@ -298,7 +326,7 @@ export interface OutlookApi {
   getFolderTree(sourceId: string): Promise<FolderNode[]>;
   getItemCount(sourceId: string, folderId: string): Promise<number>;
   getItems(sourceId: string, folderId: string, offset: number, limit: number): Promise<ItemSummary[]>;
-  getItem(sourceId: string, folderId: string, index: number): Promise<ItemDetail>;
+  getItem(sourceId: string, folderId: string, index: number, stableId?: string): Promise<ItemDetail>;
   search(
     sourceId: string,
     query: string,
@@ -312,6 +340,7 @@ export interface OutlookApi {
     folderId: string,
     index: number,
     attachIndex: number,
+    stableId?: string,
   ): Promise<string | null>;
   /** Abre o anexo com o aplicativo padrão sem salvá-lo (cópia temporária). */
   openAttachment(
@@ -319,23 +348,31 @@ export interface OutlookApi {
     folderId: string,
     index: number,
     attachIndex: number,
+    stableId?: string,
   ): Promise<boolean>;
   /** Escolhe uma pasta e grava todos os anexos da mensagem. */
   saveAllAttachments(
     sourceId: string,
     folderId: string,
     index: number,
+    stableId?: string,
   ): Promise<{ dir: string; saved: number; total: number } | null>;
   getAttachmentData(
     sourceId: string,
     folderId: string,
     index: number,
     attachIndex: number,
+    stableId?: string,
   ): Promise<AttachmentData>;
   /** Salva a mensagem como .eml (diálogo). Retorna o caminho salvo ou null. */
-  saveItemAs(sourceId: string, folderId: string, index: number): Promise<string | null>;
+  saveItemAs(
+    sourceId: string,
+    folderId: string,
+    index: number,
+    stableId?: string,
+  ): Promise<string | null>;
   /** Imprime a mensagem (diálogo de impressão do SO). */
-  printItem(sourceId: string, folderId: string, index: number): Promise<boolean>;
+  printItem(sourceId: string, folderId: string, index: number, stableId?: string): Promise<boolean>;
 }
 
 const api: OutlookApi = {
@@ -361,8 +398,8 @@ const api: OutlookApi = {
   connectAccount: (accountId) => ipcRenderer.invoke('accounts:connect', accountId),
   sendMail: (input) => ipcRenderer.invoke('accounts:send', input),
   saveDraft: (input) => ipcRenderer.invoke('mail:saveDraft', input),
-  openDraft: (sourceId, folderId, index) =>
-    ipcRenderer.invoke('mail:openDraft', sourceId, folderId, index),
+  openDraft: (sourceId, folderId, index, stableId) =>
+    ipcRenderer.invoke('mail:openDraft', sourceId, folderId, index, stableId),
   pickAttachments: () => ipcRenderer.invoke('dialog:pickAttachments'),
   pickImage: () => ipcRenderer.invoke('dialog:pickImage'),
   openComposeWindow: (draft) => ipcRenderer.invoke('compose:openWindow', draft),
@@ -408,32 +445,32 @@ const api: OutlookApi = {
   setLanguage: (l) => ipcRenderer.invoke('settings:setLanguage', l),
   getSetupComplete: () => ipcRenderer.invoke('settings:getSetupComplete'),
   setSetupComplete: (v) => ipcRenderer.invoke('settings:setSetupComplete', v),
-  moveItem: (srcId, srcFolderId, index, dstId, dstFolderId) =>
-    ipcRenderer.invoke('items:move', srcId, srcFolderId, index, dstId, dstFolderId),
-  isLocalItem: (sourceId, folderId, index) =>
-    ipcRenderer.invoke('items:isLocal', sourceId, folderId, index),
-  deleteItem: (sourceId, folderId, index) =>
-    ipcRenderer.invoke('items:delete', sourceId, folderId, index),
-  deleteItems: (sourceId, folderId, indexes) =>
-    ipcRenderer.invoke('items:deleteMany', sourceId, folderId, indexes),
-  moveItems: (srcId, srcFolderId, indexes, dstId, dstFolderId) =>
-    ipcRenderer.invoke('items:moveMany', srcId, srcFolderId, indexes, dstId, dstFolderId),
-  setItemRead: (sourceId, folderId, index, read) =>
-    ipcRenderer.invoke('items:setRead', sourceId, folderId, index, read),
+  moveItem: (srcId, srcFolderId, index, dstId, dstFolderId, stableId) =>
+    ipcRenderer.invoke('items:move', srcId, srcFolderId, index, dstId, dstFolderId, stableId),
+  isLocalItem: (sourceId, folderId, index, stableId) =>
+    ipcRenderer.invoke('items:isLocal', sourceId, folderId, index, stableId),
+  deleteItem: (sourceId, folderId, index, stableId) =>
+    ipcRenderer.invoke('items:delete', sourceId, folderId, index, stableId),
+  deleteItems: (sourceId, folderId, indexes, stableIds) =>
+    ipcRenderer.invoke('items:deleteMany', sourceId, folderId, indexes, stableIds),
+  moveItems: (srcId, srcFolderId, indexes, dstId, dstFolderId, stableIds) =>
+    ipcRenderer.invoke('items:moveMany', srcId, srcFolderId, indexes, dstId, dstFolderId, stableIds),
+  setItemRead: (sourceId, folderId, index, read, stableId) =>
+    ipcRenderer.invoke('items:setRead', sourceId, folderId, index, read, stableId),
   getCategories: () => ipcRenderer.invoke('cats:list'),
   saveCategories: (cats) => ipcRenderer.invoke('cats:save', cats),
-  getItemCategories: (sourceId, folderId, index) =>
-    ipcRenderer.invoke('items:getCategories', sourceId, folderId, index),
-  setItemCategories: (sourceId, folderId, indexes, cats) =>
-    ipcRenderer.invoke('items:setCategories', sourceId, folderId, indexes, cats),
+  getItemCategories: (sourceId, folderId, index, stableId) =>
+    ipcRenderer.invoke('items:getCategories', sourceId, folderId, index, stableId),
+  setItemCategories: (sourceId, folderId, indexes, cats, stableIds) =>
+    ipcRenderer.invoke('items:setCategories', sourceId, folderId, indexes, cats, stableIds),
   moveFolder: (sourceId, folderId, newParentFolderId, dstSourceId) =>
     ipcRenderer.invoke('folders:move', sourceId, folderId, newParentFolderId, dstSourceId),
   createFolder: (sourceId, name, parentFolderId) =>
     ipcRenderer.invoke('folders:create', sourceId, name, parentFolderId),
   createSpecialItem: (sourceId, item) =>
     ipcRenderer.invoke('items:createSpecial', sourceId, item),
-  updateSpecialItem: (sourceId, folderId, index, item) =>
-    ipcRenderer.invoke('items:updateSpecial', sourceId, folderId, index, item),
+  updateSpecialItem: (sourceId, folderId, index, item, stableId) =>
+    ipcRenderer.invoke('items:updateSpecial', sourceId, folderId, index, item, stableId),
   renameFolder: (sourceId, folderId, newName) =>
     ipcRenderer.invoke('folders:rename', sourceId, folderId, newName),
   deleteFolder: (sourceId, folderId) => ipcRenderer.invoke('folders:delete', sourceId, folderId),
@@ -552,7 +589,8 @@ const api: OutlookApi = {
   getItemCount: (sourceId, folderId) => ipcRenderer.invoke('mail:itemCount', sourceId, folderId),
   getItems: (sourceId, folderId, offset, limit) =>
     ipcRenderer.invoke('mail:items', sourceId, folderId, offset, limit),
-  getItem: (sourceId, folderId, index) => ipcRenderer.invoke('mail:item', sourceId, folderId, index),
+  getItem: (sourceId, folderId, index, stableId) =>
+    ipcRenderer.invoke('mail:item', sourceId, folderId, index, stableId),
   search: (sourceId, query, containerClass, folderId) =>
     ipcRenderer.invoke('mail:search', sourceId, query, containerClass, folderId),
   onSearchBatch: (cb) => {
@@ -561,18 +599,18 @@ const api: OutlookApi = {
     ipcRenderer.on('mail:searchBatch', listener);
     return () => ipcRenderer.removeListener('mail:searchBatch', listener);
   },
-  saveAttachment: (sourceId, folderId, index, attachIndex) =>
-    ipcRenderer.invoke('mail:saveAttachment', sourceId, folderId, index, attachIndex),
-  openAttachment: (sourceId, folderId, index, attachIndex) =>
-    ipcRenderer.invoke('mail:openAttachment', sourceId, folderId, index, attachIndex),
-  saveAllAttachments: (sourceId, folderId, index) =>
-    ipcRenderer.invoke('mail:saveAllAttachments', sourceId, folderId, index),
-  saveItemAs: (sourceId, folderId, index) =>
-    ipcRenderer.invoke('items:saveAs', sourceId, folderId, index),
-  printItem: (sourceId, folderId, index) =>
-    ipcRenderer.invoke('items:print', sourceId, folderId, index),
-  getAttachmentData: (sourceId, folderId, index, attachIndex) =>
-    ipcRenderer.invoke('mail:attachmentData', sourceId, folderId, index, attachIndex),
+  saveAttachment: (sourceId, folderId, index, attachIndex, stableId) =>
+    ipcRenderer.invoke('mail:saveAttachment', sourceId, folderId, index, attachIndex, stableId),
+  openAttachment: (sourceId, folderId, index, attachIndex, stableId) =>
+    ipcRenderer.invoke('mail:openAttachment', sourceId, folderId, index, attachIndex, stableId),
+  saveAllAttachments: (sourceId, folderId, index, stableId) =>
+    ipcRenderer.invoke('mail:saveAllAttachments', sourceId, folderId, index, stableId),
+  saveItemAs: (sourceId, folderId, index, stableId) =>
+    ipcRenderer.invoke('items:saveAs', sourceId, folderId, index, stableId),
+  printItem: (sourceId, folderId, index, stableId) =>
+    ipcRenderer.invoke('items:print', sourceId, folderId, index, stableId),
+  getAttachmentData: (sourceId, folderId, index, attachIndex, stableId) =>
+    ipcRenderer.invoke('mail:attachmentData', sourceId, folderId, index, attachIndex, stableId),
 };
 
 contextBridge.exposeInMainWorld('outlook', api);

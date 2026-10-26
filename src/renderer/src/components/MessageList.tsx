@@ -64,7 +64,12 @@ export interface MsgCtxPayload {
   sourceId: string;
   folderId: string;
   index: number;
+  /** stableId do item clicado — resolve a posição atual no backend mesmo
+   *  se a pasta recebeu/perdeu itens depois da listagem. */
+  stableId?: string;
   indexes: number[];
+  /** stableIds paralelos a `indexes` (multi-seleção). */
+  stableIds?: (string | undefined)[];
   isRead: boolean;
   /** Categorias do item clicado (para marcar os ✓ no submenu). */
   cats: string[];
@@ -591,7 +596,11 @@ export function MessageList({
       sourceId,
       folderId,
       index: m.index,
+      stableId: m.stableId,
       indexes,
+      stableIds: indexes.map((ix) =>
+        ix === m.index ? m.stableId : items.find((it) => it.index === ix)?.stableId,
+      ),
       isRead: m.isRead,
       cats: m.categories ?? [],
       senders: [...senders],

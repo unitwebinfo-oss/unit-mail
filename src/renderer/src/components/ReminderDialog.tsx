@@ -11,6 +11,8 @@ export interface ReminderEvent {
   sourceId: string;
   folderId: string;
   index: number;
+  /** Identidade estável do item — resolve a posição atual no backend. */
+  stableId?: string;
 }
 
 const SNOOZE_MINUTES = [5, 10, 15, 30, 60];
