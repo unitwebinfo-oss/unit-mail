@@ -44,6 +44,7 @@ const APP_LINKS = {
   github: 'https://github.com/unitwebinfo-oss/unit-mail',
   site: '', // ex.: 'https://www.empresa.com.br'
   company: '', // nome da empresa desenvolvedora
+  donate: 'https://www.paypal.com/donate/?hosted_button_id=X95ATUT9TXGNW',
 };
 
 interface RibbonProps {
@@ -466,8 +467,16 @@ export function Ribbon(props: RibbonProps) {
                   )}
                 </div>
 
-                {(APP_LINKS.github || APP_LINKS.site) && (
+                {(APP_LINKS.github || APP_LINKS.site || APP_LINKS.donate) && (
                   <div className="help-links">
+                    {APP_LINKS.donate && (
+                      <button
+                        className="bs-add help-donate"
+                        onClick={() => window.outlook.openExternal?.(APP_LINKS.donate)}
+                      >
+                        Apoiar o projeto — doar via PayPal
+                      </button>
+                    )}
                     {APP_LINKS.github && (
                       <button
                         className="bs-add"

@@ -155,8 +155,7 @@ export default function App() {
   const [winChrome, setWinChrome] = useState(false);
   /** Janela de mensagem maximizada (duplo clique num email). */
   const [msgMax, setMsgMax] = useState(false);
-  /** Release mais nova no GitHub (verificação de atualização na abertura). */
-  const [updateInfo, setUpdateInfo] = useState<{ latest: string; url: string } | null>(null);
+  /** Release mais nova no GitHub — exibida nas Configurações. */
   const [showSettings, setShowSettings] = useState(false);
   const [settingsInitTab, setSettingsInitTab] = useState<SettingsTab>('email');
   const [showOnboarding, setShowOnboarding] = useState(false);
@@ -508,16 +507,7 @@ export default function App() {
     // Barra azul integrada onde o titleBarOverlay existe (Windows e Linux);
     // no macOS a moldura nativa continua.
     window.outlook.getAppInfo?.().then((i) => setWinChrome(i.platform !== 'darwin'));
-    // Verificação de atualização — uma vez na abertura, alguns segundos depois
-    // do boot para não concorrer com a carga inicial das bases.
-    const updTimer = setTimeout(() => {
-      window.outlook
-        .checkUpdate?.()
-        .then((r) => {
-          if (r?.newer) setUpdateInfo({ latest: r.latest, url: r.url });
-        })
-        .catch(() => {});
-    }, 5000);
+    // Verificação de atualização — feita dentro das Configurações.
     // Idioma salvo — decide t() e os nomes de exibição das pastas padrão
     window.outlook.getLanguage?.().then((l) => initLang(l));
     // Tema: aplica o salvo e reage quando o SO alterna claro/escuro
@@ -639,7 +629,6 @@ export default function App() {
     // Envio concluído numa janela de composição separada → recarrega listas
     const unsubSent2 = window.outlook.onComposeSent?.(() => void refreshOpenFolder());
     return () => {
-      clearTimeout(updTimer);
       clearTimeout(srcTimer);
       unsub?.();
       unsubProfile?.();
@@ -2677,26 +2666,7 @@ export default function App() {
           </span>
         </div>
       )}
-      {updateInfo && (
-        <div className="update-bar" role="status">
-          <span>
-            Nova versão <strong>v{updateInfo.latest}</strong> disponível.
-          </span>
-          <button
-            className="upd-btn"
-            onClick={() => window.outlook.openExternal?.(updateInfo.url)}
-          >
-            Baixar atualização
-          </button>
-          <button
-            className="upd-close"
-            title="Avisar depois"
-            onClick={() => setUpdateInfo(null)}
-          >
-            <Icon name="x" size={12} />
-          </button>
-        </div>
-      )}
+
       <Ribbon
         module={module}
         pstOpen={!!selected}
@@ -2755,25 +2725,7 @@ export default function App() {
         }
         onCatsManage={() => setShowCatsDlg(true)}
       />
-      {!hasAnySource ? (
-        // Durante o wizard de primeira execução a tela de boas-vindas não
-        // aparece atrás do modal (ficava uma janela branca visível por baixo)
-        showOnboarding ? null : (
-        <div className="welcome">
-          <Icon name="logo" size={96} />
-          <h1>{t('Selecione arquivos de dados ou configure suas contas')}</h1>
-          <div style={{ display: 'flex', gap: 10 }}>
-            <button className="open-btn" onClick={() => openSettings('data')}>
-              {t('Arquivos de dados…')}
-            </button>
-            <button className="open-btn" style={{ background: 'var(--surface)', color: 'var(--blue)', border: '1px solid var(--blue)' }} onClick={() => openSettings('email')}>
-              {t('Configurar contas…')}
-            </button>
-          </div>
-          {error && <div style={{ color: '#c00' }}>{error}</div>}
-        </div>
-        )
-      ) : (
+      {!hasAnySource ? null : (
         <>
           <div className="main-area">
             {module !== 'calendar' && (
@@ -2975,9 +2927,12 @@ export default function App() {
               <>
                 <TasksModule
                   folder={selected?.folder ?? null}
+                  sourceId={selected?.sourceId ?? null}
                   items={items}
                   selectedIndex={detail?.index ?? null}
                   onSelect={selectItem}
+                  onEditItem={openItemEditor}
+                  onChanged={() => selected && void loadFolder(selected.sourceId, selected.folder, true)}
                 />
                 <ReadingPane
                   item={detail}

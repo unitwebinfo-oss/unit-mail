@@ -85,6 +85,16 @@ export function AccountsSettings({
   useEffect(() => {
     window.outlook.getAppInfo?.().then((i) => setSecureStore(i.secureStorage)).catch(() => {});
   }, []);
+  /** Release mais nova no GitHub — verificada ao abrir as configurações. */
+  const [updInfo, setUpdInfo] = useState<{ latest: string; url: string } | null>(null);
+  useEffect(() => {
+    window.outlook
+      .checkUpdate?.()
+      .then((r) => {
+        if (r?.newer) setUpdInfo({ latest: r.latest, url: r.url });
+      })
+      .catch(() => {});
+  }, []);
   const [testMsg, setTestMsg] = useState('');
   const [busy, setBusy] = useState(false);
   const [importAvailable, setImportAvailable] = useState(false);
@@ -1125,6 +1135,26 @@ export function AccountsSettings({
 
         {/* Conteúdo das abas */}
         <div className="set-body">
+        {updInfo && (
+          <div className="update-bar" role="status">
+            <span>
+              {t('Nova versão')} <strong>v{updInfo.latest}</strong> {t('disponível.')}
+            </span>
+            <button
+              className="upd-btn"
+              onClick={() => window.outlook.openExternal?.(updInfo.url)}
+            >
+              {t('Baixar atualização')}
+            </button>
+            <button
+              className="upd-close"
+              title={t('Avisar depois')}
+              onClick={() => setUpdInfo(null)}
+            >
+              <Icon name="x" size={12} />
+            </button>
+          </div>
+        )}
 
         {/* Bases de dados (PST + locais) */}
         {tab === 'data' && (

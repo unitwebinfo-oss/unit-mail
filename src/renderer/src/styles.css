@@ -3555,6 +3555,7 @@ body.dark .sync-dialog { box-shadow: 0 10px 30px rgba(0,0,0,.6); }
   grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
   gap: 14px;
   align-content: start;
+  align-items: start;
 }
 .geral-grid .set-card { display: flex; flex-direction: column; gap: 10px; }
 .geral-grid .set-card .fld { max-width: 300px; }
@@ -3810,3 +3811,29 @@ body.dark .btn-ghost.danger:hover:not(:disabled) { background: rgba(196, 43, 28,
   padding: 10px 16px; border-top: 1px solid var(--border); background: var(--surface-alt);
 }
 .reminder-snooze { display: flex; align-items: center; gap: 6px; }
+
+.task-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.task-toolbar .task-new { flex: 1; }
+.task-toolbar .task-count { font-size: 12px; color: var(--muted); white-space: nowrap; }
+.task-row .check {
+  cursor: pointer;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  border-radius: 3px;
+  font-size: 12px;
+}
+.task-row .check:hover { border-color: var(--blue); }
+
+.help-links .help-donate {
+  background: #0070ba;
+  color: #fff;
+  border-color: #0070ba;
+  font-weight: 600;
+}
+.help-links .help-donate:hover { background: #005ea6; border-color: #005ea6; }
