@@ -952,6 +952,69 @@ function windowBgForTheme(): string {
   return dark ? '#171717' : '#f3f3f3';
 }
 
+/**
+ * Menu de contexto (botão direito) das janelas — cobre o corpo do email
+ * dentro do iframe sandboxed (o evento do renderer não chega lá) e os
+ * campos editáveis, incluindo as sugestões do corretor ortográfico do
+ * Chromium sobre a palavra sublinhada.
+ */
+function attachContextMenu(win: BrowserWindow): void {
+  const sess = win.webContents.session;
+  try {
+    sess.setSpellCheckerLanguages([appLanguage() === 'en' ? 'en-US' : 'pt-BR']);
+  } catch {
+    // dicionário indisponível na plataforma — segue sem sublinhado
+  }
+  win.webContents.on('context-menu', (_e, p) => {
+    const en = appLanguage() === 'en';
+    const menu: Electron.MenuItemConstructorOptions[] = [];
+    // Sugestões para a palavra sublinhada + "adicionar ao dicionário"
+    if (p.isEditable && p.misspelledWord) {
+      for (const s of p.dictionarySuggestions.slice(0, 5)) {
+        menu.push({ label: s, click: () => win.webContents.replaceMisspelling(s) });
+      }
+      menu.push({
+        label: en ? 'Add to dictionary' : 'Adicionar ao dicionário',
+        click: () => sess.addWordToSpellCheckerDictionary(p.misspelledWord),
+      });
+      menu.push({ type: 'separator' });
+    }
+    if (p.linkURL) {
+      if (/^https?:/i.test(p.linkURL)) {
+        menu.push({
+          label: en ? 'Open link in browser' : 'Abrir link no navegador',
+          click: () => void shell.openExternal(p.linkURL),
+        });
+      }
+      menu.push(
+        {
+          label: en ? 'Copy link address' : 'Copiar endereço do link',
+          click: () => clipboard.writeText(p.linkURL),
+        },
+        { type: 'separator' },
+      );
+    }
+    if (p.isEditable) {
+      menu.push(
+        { label: en ? 'Undo' : 'Desfazer', role: 'undo', enabled: p.editFlags.canUndo },
+        { label: en ? 'Redo' : 'Refazer', role: 'redo', enabled: p.editFlags.canRedo },
+        { type: 'separator' },
+        { label: en ? 'Cut' : 'Recortar', role: 'cut', enabled: p.editFlags.canCut },
+        { label: en ? 'Copy' : 'Copiar', role: 'copy', enabled: p.editFlags.canCopy },
+        { label: en ? 'Paste' : 'Colar', role: 'paste', enabled: p.editFlags.canPaste },
+        { type: 'separator' },
+        { label: en ? 'Select all' : 'Selecionar tudo', role: 'selectAll' },
+      );
+    } else {
+      if (p.selectionText.trim()) {
+        menu.push({ label: en ? 'Copy' : 'Copiar', role: 'copy' });
+      }
+      menu.push({ label: en ? 'Select all' : 'Selecionar tudo', role: 'selectAll' });
+    }
+    if (menu.length) Menu.buildFromTemplate(menu).popup({ window: win });
+  });
+}
+
 function createWindow(): BrowserWindow {
   const iconPath = appIcon();
   const winChrome = windowChrome();
@@ -990,47 +1053,7 @@ function createWindow(): BrowserWindow {
     return { action: 'deny' };
   });
 
-  // Menu de contexto (botão direito) — cobre o corpo do email dentro do iframe
-  // sandboxed (o evento do renderer não chega lá) e os campos editáveis.
-  // Links externos só oferecem "abrir" para http(s) — esquemas tipo chatgpt://
-  // não devem disparar apps de terceiros.
-  win.webContents.on('context-menu', (_e, p) => {
-    const en = appLanguage() === 'en';
-    const menu: Electron.MenuItemConstructorOptions[] = [];
-    if (p.linkURL) {
-      if (/^https?:/i.test(p.linkURL)) {
-        menu.push({
-          label: en ? 'Open link in browser' : 'Abrir link no navegador',
-          click: () => void shell.openExternal(p.linkURL),
-        });
-      }
-      menu.push(
-        {
-          label: en ? 'Copy link address' : 'Copiar endereço do link',
-          click: () => clipboard.writeText(p.linkURL),
-        },
-        { type: 'separator' },
-      );
-    }
-    if (p.isEditable) {
-      menu.push(
-        { label: en ? 'Undo' : 'Desfazer', role: 'undo', enabled: p.editFlags.canUndo },
-        { label: en ? 'Redo' : 'Refazer', role: 'redo', enabled: p.editFlags.canRedo },
-        { type: 'separator' },
-        { label: en ? 'Cut' : 'Recortar', role: 'cut', enabled: p.editFlags.canCut },
-        { label: en ? 'Copy' : 'Copiar', role: 'copy', enabled: p.editFlags.canCopy },
-        { label: en ? 'Paste' : 'Colar', role: 'paste', enabled: p.editFlags.canPaste },
-        { type: 'separator' },
-        { label: en ? 'Select all' : 'Selecionar tudo', role: 'selectAll' },
-      );
-    } else {
-      if (p.selectionText.trim()) {
-        menu.push({ label: en ? 'Copy' : 'Copiar', role: 'copy' });
-      }
-      menu.push({ label: en ? 'Select all' : 'Selecionar tudo', role: 'selectAll' });
-    }
-    if (menu.length) Menu.buildFromTemplate(menu).popup({ window: win });
-  });
+  attachContextMenu(win);
 
   // Estava maximizada ao fechar → reabre maximizada. Chamar maximize() antes
   // do show é seguro: a janela aparece já maximizada, sem piscar.
@@ -1119,6 +1142,7 @@ function openComposeWindow(draft: Record<string, unknown>): void {
     },
   });
   w.setMenuBarVisibility(false);
+  attachContextMenu(w);
   w.once('ready-to-show', () => w.show());
   w.on('closed', () => composeDrafts.delete(id));
   if (isDev) {
