@@ -265,6 +265,7 @@ export class ImapMailSource implements MailBackend {
 
       return {
         index: uid,
+        stableId: `u|${uid}`,
         messageClass: 'IPM.Note',
         subject: parsed.subject || '(sem assunto)',
         senderName: fromAddr?.name || fromAddr?.address || '',

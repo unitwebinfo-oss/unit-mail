@@ -1554,6 +1554,7 @@ export class PstService {
       const parsed = await simpleParser(readFileSync(join(this.archiveDirFor(folderId), file)));
       const d = await this.detailFromParsed(parsed, index);
       d.local = true;
+      d.stableId = `a|${this.canonShadow(folderId.slice(4))}/${file}`;
       d.categories = this.catsOfKey(`a|${folderId.slice(4)}/${file}`);
       return d;
     }
@@ -1566,6 +1567,7 @@ export class PstService {
       const parsed = await simpleParser(readFileSync(join(this.archiveDirFor(arcId), file)));
       const d = await this.detailFromParsed(parsed, index);
       d.local = true;
+      d.stableId = `a|${this.canonShadow(arcId.slice(4))}/${file}`;
       d.categories = this.catsOfKey(`a|${arcId.slice(4)}/${file}`);
       return d;
     }
@@ -1577,6 +1579,7 @@ export class PstService {
     this.markItemRead(folderId, index);
     const d = this.detail(child, index);
     d.isRead = this.pstReadOverride(folderId, index - arcCount) ?? d.isRead;
+    d.stableId = `p|${folderId}|${index - arcCount}`;
     d.categories = this.catsOfKey(`p|${folderId}|${index - arcCount}`);
     return d;
   }
@@ -1585,9 +1588,11 @@ export class PstService {
     const file = this.archiveFiles(folderId)[index];
     if (!file) throw new Error('Item não encontrado');
     const parsed = await simpleParser(readFileSync(join(this.archiveDirFor(folderId), file)));
-    const att = (parsed.attachments || []).filter(
-      (a) => !(a.contentDisposition === 'inline' && a.contentId),
-    )[attachIndex];
+    // attachIndex é a posição no array COMPLETO de anexos do parse — o
+    // detalhe filtra os inline para exibir mas preserva o `index` original.
+    // Filtrar aqui deslocava as posições: mensagem com imagem inline antes
+    // do anexo real dava "Anexo não encontrado" (ou baixava o errado).
+    const att = (parsed.attachments || [])[attachIndex];
     if (!att) throw new Error('Anexo não encontrado');
     return {
       filename: att.filename || `anexo-${attachIndex}`,
