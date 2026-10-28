@@ -2362,7 +2362,7 @@ export class PstService {
    */
   // Versão do formato do índice de resumos — bumpar quando campos novos
   // entram no ItemSummary (ex.: inviteMethod), pois entradas antigas não os têm.
-  private static readonly SUMIDX_VERSION = 4;
+  private static readonly SUMIDX_VERSION = 5;
 
   private sumIdx: {
     v?: number;
