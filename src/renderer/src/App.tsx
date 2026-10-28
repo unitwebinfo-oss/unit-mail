@@ -2049,7 +2049,7 @@ export default function App() {
       inviteBusy.current = true;
       setNotice(t('Enviando resposta ao organizador…'));
       try {
-        await window.outlook.respondInvite({
+        const res = await window.outlook.respondInvite({
           sourceId: detailRef.sourceId,
           folderId: detailRef.folderId,
           index: detail.index,
@@ -2062,7 +2062,9 @@ export default function App() {
         setError('');
         setNotice(
           response === 'accept'
-            ? t('Convite aceito — compromisso adicionado ao Calendário.')
+            ? res?.apptSaved === false
+              ? t('Resposta enviada, mas o compromisso não pôde ser registrado no Calendário — verifique a base de dados principal.')
+              : t('Convite aceito — compromisso adicionado ao Calendário.')
             : response === 'decline'
               ? t('Convite recusado — resposta enviada ao organizador.')
               : t('Nova proposta de horário enviada ao organizador.'),

@@ -2142,29 +2142,10 @@ function registerIpc(): void {
       // entre pastas/sessões) — a barra deixa de oferecer os botões.
       markInviteResponded(inv.uid || `${input.sourceId}|${input.folderId}|${input.index}`, input.response);
 
-      // Comportamento padrão do Outlook ("excluir convites de reunião após
-      // responder"): a mensagem do convite sai da listagem e vai para Itens
-      // Excluídos — o compromisso vive no Calendário e nos lembretes.
-      try {
-        const src = sourceManager.listAll().find((s) => s.id === input.sourceId);
-        const kind = mailFolderKind(input.sourceId, input.folderId);
-        if (src?.filePath && kind !== 'deleted' && kind !== 'calendar') {
-          const delName = resolveStoreFolderName(src.filePath, 'deleted');
-          await sourceManager.moveItem(
-            input.sourceId,
-            input.folderId,
-            input.index,
-            input.sourceId,
-            `arc:${delName}`,
-            input.stableId,
-          );
-        }
-      } catch {
-        // remoção é best-effort — a resposta já foi enviada
-      }
-
       // Aceito → grava o compromisso na pasta Calendário da base (local/PST-sombra)
+      let apptSaved = false;
       if (input.response === 'accept') {
+        const evUid = inv.uid || `ol-${Date.now()}`;
         const eventIcs =
           inv.ics ||
           [
@@ -2172,7 +2153,7 @@ function registerIpc(): void {
             'VERSION:2.0',
             'METHOD:REQUEST',
             'BEGIN:VEVENT',
-            `UID:${inv.uid || `ol-${Date.now()}`}`,
+            `UID:${evUid}`,
             `SUMMARY:${fold(inv.summary || detail.subject)}`,
             dtStart && `DTSTART:${dtStart}`,
             dtEnd && `DTEND:${dtEnd}`,
@@ -2193,6 +2174,16 @@ function registerIpc(): void {
           `Subject: ${inv.summary || detail.subject}`,
           `Date: ${new Date().toUTCString()}`,
           'MIME-Version: 1.0',
+          // Headers X-UM-Appt-*: além do .ics anexo, garantem que a listagem
+          // do Calendário mostre data/local/lembrete mesmo se o parse do
+          // ICS falhar para algum formato exótico.
+          'X-UM-Class: IPM.Appointment',
+          `X-UM-Appt-Uid: ${evUid}`,
+          dtStart && `X-UM-Appt-Start: ${inv.start || ''}`,
+          dtEnd && `X-UM-Appt-End: ${inv.end || ''}`,
+          inv.location && `X-UM-Appt-Location: ${inv.location}`,
+          `X-UM-Appt-Organizer: ${toOrg}`,
+          'X-UM-Appt-Reminder: 15',
           'Content-Type: multipart/mixed; boundary="ol-cal"',
           '',
           '--ol-cal',
@@ -2208,25 +2199,70 @@ function registerIpc(): void {
           eventIcs,
           '--ol-cal--',
         ].join('\r\n');
-        // Compromissos sempre vão para o Calendário do arquivo de dados
-        // principal — mesmo que o convite tenha chegado em outra base.
+        // O compromisso vai para o Calendário da base onde o convite chegou
+        // (POP3 entrega na base vinculada à conta — é lá que o usuário olha).
+        // Se essa base não é gravável (convite numa caixa IMAP — acct: não tem
+        // importItemEml), cai para a base principal e por fim para a primeira
+        // base gravável: antes o compromisso aceito era descartado em silêncio.
+        const all = sourceManager.listAll();
         const defPath = loadSettings().defaultStorePath;
-        const defSrc = defPath
-          ? sourceManager.listAll().find((s) => s.filePath === defPath)
-          : undefined;
-        const pst = (defSrc ? sourceManager.backend(defSrc.id) : svc) as import('./pstService').PstService;
-        try {
-          if (typeof pst.importItemEml === 'function') {
+        const writable = (s: (typeof all)[number]): boolean => {
+          try {
+            const b = sourceManager.backend(s.id) as import('./pstService').PstService;
+            return typeof b?.importItemEml === 'function';
+          } catch {
+            return false;
+          }
+        };
+        const target =
+          all.find((s) => s.id === input.sourceId && writable(s)) ??
+          all.find(
+            (s) =>
+              !!defPath &&
+              !!s.filePath &&
+              resolve(s.filePath).toLowerCase() === resolve(defPath).toLowerCase() &&
+              writable(s),
+          ) ??
+          all.find((s) => writable(s));
+        if (!target) {
+          console.error('[invite] aceito sem nenhuma base gravável aberta — compromisso não registrado');
+        } else {
+          try {
+            const pst = sourceManager.backend(target.id) as import('./pstService').PstService;
             // Pasta de calendário já existente (qualquer idioma) ou nome localizado
-            const calName = resolveStoreFolderName(defSrc?.filePath || '', 'calendar');
+            const calName = resolveStoreFolderName(target.filePath || '', 'calendar');
             await pst.importItemEml(`arc:${calName}`, Buffer.from(eml, 'utf8'));
             invalidateCalendarUids();
+            apptSaved = true;
+          } catch (err) {
+            console.error('[invite] compromisso aceito não pôde ser gravado no Calendário:', err);
           }
-        } catch {
-          // base não gravável — a resposta já foi enviada
         }
       }
-      return { sent: true };
+
+      // Comportamento padrão do Outlook ("excluir convites de reunião após
+      // responder"): a mensagem do convite sai da listagem e vai para Itens
+      // Excluídos — o compromisso vive no Calendário e nos lembretes. Só
+      // depois da gravação: se ela falhar o convite continua na Caixa de
+      // Entrada em vez de sumir sem deixar compromisso.
+      try {
+        const src = sourceManager.listAll().find((s) => s.id === input.sourceId);
+        const kind = mailFolderKind(input.sourceId, input.folderId);
+        if (src?.filePath && kind !== 'deleted' && kind !== 'calendar') {
+          const delName = resolveStoreFolderName(src.filePath, 'deleted');
+          await sourceManager.moveItem(
+            input.sourceId,
+            input.folderId,
+            input.index,
+            input.sourceId,
+            `arc:${delName}`,
+            input.stableId,
+          );
+        }
+      } catch {
+        // remoção é best-effort — a resposta já foi enviada
+      }
+      return { sent: true, apptSaved };
     },
   );
 

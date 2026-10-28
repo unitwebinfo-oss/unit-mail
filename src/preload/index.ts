@@ -246,7 +246,7 @@ export interface OutlookApi {
     response: 'accept' | 'decline' | 'counter';
     newStart?: string;
     newEnd?: string;
-  }): Promise<{ sent: boolean }>;
+  }): Promise<{ sent: boolean; apptSaved?: boolean }>;
   /** Evento do Enviar/Receber automático/manual do main — retorna unsubscribe. */
   onSyncDone(cb: (results: SyncResult[]) => void): () => void;
   /** Uma base/fonte terminou de abrir na restauração em 2º plano —
