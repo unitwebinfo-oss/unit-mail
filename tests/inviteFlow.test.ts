@@ -130,6 +130,39 @@ describe('convite recebido: detecção e datas', () => {
     expect(items[0].inviteMethod).toBeUndefined();
   });
 
+  it('clique no compromisso abre o certo mesmo com outro chegando antes (stableId)', async () => {
+    const appt = (uid: string, subject: string, start: string) =>
+      Buffer.from(
+        [
+          'From: x@y.com',
+          'To: z@y.com',
+          `Subject: ${subject}`,
+          'Date: Mon, 28 Oct 2026 10:00:00 GMT',
+          'MIME-Version: 1.0',
+          'X-UM-Class: IPM.Appointment',
+          'Content-Type: multipart/mixed; boundary="ol-cal"',
+          '',
+          '--ol-cal',
+          'Content-Type: text/calendar; method=PUBLISH; name="invite.ics"',
+          'Content-Disposition: attachment; filename="invite.ics"',
+          '',
+          ['BEGIN:VCALENDAR', 'VERSION:2.0', 'METHOD:PUBLISH', 'BEGIN:VEVENT', `UID:${uid}`, `SUMMARY:${subject}`, `DTSTART:${start}`, `DTEND:${start}`, 'END:VEVENT', 'END:VCALENDAR'].join('\r\n'),
+          '--ol-cal--',
+        ].join('\r\n'),
+        'utf8',
+      );
+    await svc.importItemEml('arc:Calendário', appt('u-a', 'Primeiro', '20261030T120000Z'));
+    await new Promise((r) => setTimeout(r, 5));
+    const cal = svc.getFolderTree().find((n) => n.name === 'Calendário')!;
+    const before = await svc.getItems(cal.id, 0, 500);
+    const target = before.find((i) => i.subject === 'Primeiro')!;
+    await new Promise((r) => setTimeout(r, 5));
+    await svc.importItemEml('arc:Calendário', appt('u-b', 'Segundo', '20261031T120000Z'));
+    const d = await svc.getItem(cal.id, target.index, target.stableId);
+    expect(d.subject).toBe('Primeiro');
+    expect(d.invite).toBeUndefined();
+  });
+
   it('getItem expõe o convite pendente com o método REQUEST', async () => {
     await svc.importItemEml('arc:Caixa de Entrada', inviteEml(ICS_UTC));
     const d = await svc.getItem('arc:Caixa de Entrada', 0);

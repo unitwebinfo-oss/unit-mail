@@ -20,7 +20,7 @@ interface CalendarModuleProps {
   folder: FolderNode | null;
   items: ItemSummary[];
   selectedIndex: number | null;
-  onSelect: (item: ItemSummary) => void;
+  onSelect: (item: ItemSummary, sourceId?: string, folderId?: string) => void;
   /** Todas as pastas de calendário das bases abertas (para "Meus Calendários"). */
   calendars: CalendarRef[];
   /** Editar compromisso criado nesta base — abre o diálogo com os dados. */
@@ -299,7 +299,7 @@ export function CalendarModule({
   }, [items, extraItems, enabled, selKey, sourceId, folder, search]);
 
   const openItem = async (ev: CalEvent) => {
-    onSelect(ev);
+    onSelect(ev, ev.calSourceId, ev.calFolderId);
     try {
       const detail = await window.outlook.getItem(
         ev.calSourceId,
@@ -477,7 +477,7 @@ export function CalendarModule({
                     onClick={(e) => {
                       e.stopPropagation();
                       setSelectedDay(k);
-                      onSelect(ev);
+                      onSelect(ev, ev.calSourceId, ev.calFolderId);
                     }}
                     onDoubleClick={(e) => {
                       e.stopPropagation();
