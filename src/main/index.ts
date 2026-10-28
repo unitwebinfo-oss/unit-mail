@@ -2129,13 +2129,9 @@ function registerIpc(): void {
         to: toOrg,
         subject: `${verb}: ${inv.summary || detail.subject}`,
         html: `<p>${verb === 'Nova Proposta de Horário' ? `Proponho ${dtStart ? new Date(input.newStart!).toLocaleString('pt-BR') : ''}${dtEnd ? ` até ${new Date(input.newEnd!).toLocaleString('pt-BR')}` : ''}.` : `${verb} o convite "${inv.summary || detail.subject}".`}</p>`,
-        rawAttachments: [
-          {
-            filename: 'invite.ics',
-            contentBase64: Buffer.from(ics, 'utf8').toString('base64'),
-            contentType: `text/calendar; method=${method}`,
-          },
-        ],
+        // iMIP: resposta como parte text/calendar (não anexo) — o cliente do
+        // organizador atualiza o compromisso sozinho, como no Outlook.
+        icalEvent: { method, contentBase64: Buffer.from(ics, 'utf8').toString('base64') },
       }, accountStore.getSmtpPassword(input.accountId));
 
       // Resposta enviada com sucesso → marca o convite (por UID, estável
@@ -2146,7 +2142,9 @@ function registerIpc(): void {
       let apptSaved = false;
       if (input.response === 'accept') {
         const evUid = inv.uid || `ol-${Date.now()}`;
-        const eventIcs =
+        // METHOD:PUBLISH — o compromisso aceito é um item de calendário, não
+        // um convite pendente (com REQUEST a listagem o tratava como convite).
+        const eventIcs = (
           inv.ics ||
           [
             'BEGIN:VCALENDAR',
@@ -2167,7 +2165,8 @@ function registerIpc(): void {
             'END:VCALENDAR',
           ]
             .filter(Boolean)
-            .join('\r\n');
+            .join('\r\n')
+        ).replace(/^METHOD:[^\r\n]*/m, 'METHOD:PUBLISH');
         const eml = [
           `From: ${toOrg}`,
           `To: ${account.email}`,
@@ -2193,7 +2192,7 @@ function registerIpc(): void {
           inv.location ? `Local: ${inv.location}` : '',
           '',
           '--ol-cal',
-          'Content-Type: text/calendar; method=REQUEST; name="invite.ics"',
+          'Content-Type: text/calendar; method=PUBLISH; name="invite.ics"',
           'Content-Disposition: attachment; filename="invite.ics"',
           '',
           eventIcs,

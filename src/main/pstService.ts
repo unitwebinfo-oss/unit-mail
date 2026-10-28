@@ -103,6 +103,58 @@ function icsDate(v: string): string | null {
   return isNaN(date.getTime()) ? null : date.toISOString();
 }
 
+/** Nomes de fuso do Windows (como o Outlook grava em TZID) → IANA. */
+const WIN_TZ: Record<string, string> = {
+  'E. South America Standard Time': 'America/Sao_Paulo',
+  'Central Brazilian Standard Time': 'America/Cuiaba',
+  'SA Pacific Standard Time': 'America/Bogota',
+  'Pacific Standard Time': 'America/Los_Angeles',
+  'Mountain Standard Time': 'America/Denver',
+  'Central Standard Time': 'America/Chicago',
+  'Eastern Standard Time': 'America/New_York',
+  'GMT Standard Time': 'Europe/London',
+  'W. Europe Standard Time': 'Europe/Berlin',
+  'Romance Standard Time': 'Europe/Paris',
+  'UTC': 'UTC',
+};
+
+/** Deslocamento (ms) de um fuso IANA em um instante. */
+function zoneOffsetMs(zone: string, at: number): number {
+  const p: Record<string, number> = {};
+  for (const x of new Intl.DateTimeFormat('en-US', {
+    timeZone: zone,
+    hourCycle: 'h23',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  }).formatToParts(new Date(at))) {
+    if (x.type !== 'literal') p[x.type] = Number(x.value);
+  }
+  return Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, p.second) - Math.floor(at / 1000) * 1000;
+}
+
+/** Valor de data iCalendar com TZID → instante ISO (hora de parede no fuso informado). */
+function icsDateInZone(v: string, tzid: string): string | null {
+  const m = v.trim().match(/^(\d{4})(\d{2})(\d{2})(?:T(\d{2})(\d{2})(\d{2})?)?$/);
+  if (!m) return null;
+  const [, y, mo, d, h, mi, s] = m;
+  const guess = Date.UTC(+y, +mo - 1, +d, +(h || 0), +(mi || 0), +(s || 0));
+  try {
+    const zone = WIN_TZ[tzid] ?? tzid;
+    let off = zoneOffsetMs(zone, guess);
+    let t = guess - off;
+    const off2 = zoneOffsetMs(zone, t);
+    if (off2 !== off) t = guess - off2;
+    return new Date(t).toISOString();
+  } catch {
+    // fuso desconhecido — trata como hora local da máquina
+    return icsDate(v);
+  }
+}
+
 /** Parser mínimo de iCalendar — extrai o primeiro VEVENT + METHOD. */
 export function parseIcsInvite(text: string): {
   method: string;
@@ -118,18 +170,27 @@ export function parseIcsInvite(text: string): {
   if (!/BEGIN:VEVENT/i.test(text)) return null;
   // "Unfold" — linhas continuadas começam com espaço/tab
   const t = text.replace(/\r?\n[ \t]/g, '');
-  const get = (name: string): string =>
-    t.match(new RegExp(`^${name}(?:;[^:\\r\\n]*)?:(.*)$`, 'im'))?.[1]?.trim() ?? '';
+  // Só o VEVENT: o VTIMEZONE também tem DTSTART (1601) e seria lido por engano
+  const ev = t.match(/BEGIN:VEVENT([\s\S]*?)END:VEVENT/i)?.[1] ?? t;
+  const get = (name: string, src = ev): string =>
+    src.match(new RegExp(`^${name}(?:;[^:\\r\\n]*)?:(.*)$`, 'im'))?.[1]?.trim() ?? '';
+  const date = (name: string): string | null => {
+    const m = ev.match(new RegExp(`^${name}((?:;[^:\\r\\n]*)?):(.*)$`, 'im'));
+    if (!m) return null;
+    const value = m[2].trim();
+    const tzid = m[1].match(/TZID="?([^";:]+)"?/i)?.[1];
+    return tzid && !value.endsWith('Z') ? icsDateInZone(value, tzid) : icsDate(value);
+  };
   const orgRaw = get('ORGANIZER');
   const orgEmail = orgRaw.match(/mailto:([^\s>]+)/i)?.[1] ?? '';
-  const orgName = t.match(/ORGANIZER[^:\r\n]*CN="?([^";:\r\n]+)"?/i)?.[1]?.trim() ?? '';
-  const trig = t.match(/TRIGGER[^:\r\n]*:-?PT?(\d+)M/i)?.[1];
+  const orgName = ev.match(/ORGANIZER[^:\r\n]*CN="?([^";:\r\n]+)"?/i)?.[1]?.trim() ?? '';
+  const trig = ev.match(/TRIGGER[^:\r\n]*:-?PT?(\d+)M/i)?.[1];
   return {
-    method: (get('METHOD') || 'REQUEST').toUpperCase(),
+    method: (get('METHOD', t) || 'REQUEST').toUpperCase(),
     uid: get('UID'),
     summary: get('SUMMARY'),
-    start: icsDate(get('DTSTART')),
-    end: icsDate(get('DTEND')),
+    start: date('DTSTART'),
+    end: date('DTEND'),
     location: get('LOCATION'),
     organizer: orgName || orgEmail,
     organizerEmail: orgEmail,

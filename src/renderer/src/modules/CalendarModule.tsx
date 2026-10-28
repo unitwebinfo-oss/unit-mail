@@ -273,7 +273,7 @@ export function CalendarModule({
     };
     void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [enabledKey, selKey, calendars.length]);
+  }, [enabledKey, selKey, calendars]);
 
   // Evento da pasta aberta (se habilitada) + dos demais calendários marcados
   const allEvents = useMemo<CalEvent[]>(() => {
