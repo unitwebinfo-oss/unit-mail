@@ -3,7 +3,7 @@ import { Icon } from '../icons';
 import { folderIconKey, containerClassForModule } from '../utils';
 import { ITEM_DRAG_MIME, MoveSourceGroup } from './MessageList';
 import { isDefaultFolderId } from '../../../shared/types';
-import { folderKindOf, localizeFolderName, mailFilterTree } from '../../../shared/folderNames';
+import { folderKindOf, isNonMailFolder, localizeFolderName, mailFilterTree, nonMailFilterTree } from '../../../shared/folderNames';
 import { t, useLang, getLang } from '../i18n';
 import type { FolderNode, MailSource, ModuleId } from '../../../shared/types';
 
@@ -151,8 +151,14 @@ function FolderItem({
   const icon = folderIconKey(node.name, node.containerClass);
   const isSelected = selected?.sourceId === sourceId && selected?.folderId === node.id;
 
+  // Pastas de Calendário/Contatos/Tarefas aparecem na árvore como na Lista
+  // de pastas do Outlook — dá para abrir, mas não recebem itens nem pasta
+  // arrastada e não têm o menu de pasta (são pastas de sistema).
+  const nonMail = isNonMailFolder(node);
+
   const handleDrop = (e: React.DragEvent) => {
     setDropHover(false);
+    if (nonMail) return;
     const types = e.dataTransfer.types;
     if (!types.includes(ITEM_DRAG_MIME) && !types.includes(FOLDER_DRAG_MIME)) return;
     e.preventDefault();
@@ -212,8 +218,9 @@ function FolderItem({
         }}
         onDragOver={(e) => {
           if (
-            e.dataTransfer.types.includes(ITEM_DRAG_MIME) ||
-            e.dataTransfer.types.includes(FOLDER_DRAG_MIME)
+            !nonMail &&
+            (e.dataTransfer.types.includes(ITEM_DRAG_MIME) ||
+              e.dataTransfer.types.includes(FOLDER_DRAG_MIME))
           ) {
             e.preventDefault();
             e.stopPropagation();
@@ -226,7 +233,7 @@ function FolderItem({
         onContextMenu={(e) => {
           e.preventDefault();
           e.stopPropagation();
-          onCtx?.(e, sourceId, parentId, node);
+          if (!nonMail) onCtx?.(e, sourceId, parentId, node);
         }}
       >
         <span
@@ -340,7 +347,12 @@ export function FolderPane({
   const visibleEntries = entries
     .map((e) => ({
       ...e,
-      tree: module === 'mail' ? mailFilterTree(e.tree) : e.source.kind === 'imap' ? [] : filterTree(e.tree, cc),
+      tree:
+        module === 'mail'
+          ? [...mailFilterTree(e.tree), ...nonMailFilterTree(e.tree)]
+          : e.source.kind === 'imap'
+            ? []
+            : filterTree(e.tree, cc),
     }))
     .filter((e) => e.tree.length > 0 || (module === 'mail' && e.source.kind === 'imap'));
 

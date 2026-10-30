@@ -1196,7 +1196,7 @@ export function AccountsSettings({
                 <>
                   <span className="acct-info">
                     <span className="acct-name">
-                      {s.label}
+                      <span className="acct-label">{s.label}</span>
                       <span className={`badge ${s.kind === 'pst' ? 'badge-pst' : 'badge-local'}`}>
                         {s.kind === 'pst' ? t('PST · somente leitura') : t('Base local')}
                       </span>
@@ -1220,6 +1220,7 @@ export function AccountsSettings({
                       })()}
                     </span>
                   </span>
+                  <div className="acct-actions">
                   {defaultStore !== s.filePath && (
                     <button
                       className="btn"
@@ -1270,6 +1271,7 @@ export function AccountsSettings({
                       {t('Fechar')}
                     </button>
                   )}
+                  </div>
                 </>
               )}
             </div>

@@ -3551,11 +3551,10 @@ body.dark .sync-dialog { box-shadow: 0 10px 30px rgba(0,0,0,.6); }
 
 /* Aba Geral — cartões em grid de 2 colunas com respiro, não uma pilha apertada. */
 .geral-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+  display: flex;
+  flex-direction: column;
   gap: 14px;
-  align-content: start;
-  align-items: start;
+  max-width: 720px;
 }
 .geral-grid .set-card { display: flex; flex-direction: column; gap: 10px; }
 .geral-grid .set-card .fld { max-width: 300px; }
@@ -3681,9 +3680,11 @@ body.dark .btn-ghost.danger:hover:not(:disabled) { background: rgba(196, 43, 28,
   color: #fff; font-weight: 600; font-size: 15px;
   display: flex; align-items: center; justify-content: center;
 }
-.acct-info { flex: 1; min-width: 0; }
-.acct-name { font-size: 13.5px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+.acct-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.acct-name { font-size: 13.5px; font-weight: 600; display: flex; align-items: center; gap: 8px; min-width: 0; }
+.acct-name .acct-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .acct-sub { font-size: 11.5px; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.acct-actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; margin-left: auto; }
 .badge {
   font-size: 10px; font-weight: 600; padding: 2px 8px; border-radius: 9px;
   white-space: nowrap; letter-spacing: 0.2px;
@@ -3837,3 +3838,28 @@ body.dark .btn-ghost.danger:hover:not(:disabled) { background: rgba(196, 43, 28,
   font-weight: 600;
 }
 .help-links .help-donate:hover { background: #005ea6; border-color: #005ea6; }
+
+/* Tarefas — grupos por vencimento */
+.task-group-title {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 11px; font-weight: 600; text-transform: uppercase;
+  letter-spacing: .4px; color: var(--text-dim); padding: 12px 12px 4px;
+}
+.task-group.overdue .task-group-title { color: #c50f1f; }
+.task-group-title.collapsible { cursor: pointer; user-select: none; }
+.task-group-count {
+  background: var(--border); border-radius: 9px; padding: 0 7px;
+  font-size: 10px; line-height: 1.5;
+}
+.task-group .t-due-line { display: flex; align-items: center; gap: 6px; }
+.task-row .t-due.overdue { color: #c50f1f; font-weight: 600; }
+.t-tag {
+  font-size: 10px; font-weight: 600; padding: 1px 6px; border-radius: 8px;
+}
+.t-tag.overdue { background: #fde7e9; color: #c50f1f; }
+.t-tag.today { background: #fff4ce; color: #5c4a00; }
+.task-progress {
+  height: 4px; border-radius: 2px; background: var(--border);
+  overflow: hidden; margin-top: 4px;
+}
+.task-progress > i { display: block; height: 100%; background: var(--blue); }

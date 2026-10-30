@@ -174,15 +174,38 @@ export function resolveFolderName(existingNames: string[], kind: FolderKind, lan
  */
 const NON_MAIL_CC = new Set(['IPF.Appointment', 'IPF.Contact', 'IPF.Task']);
 const NON_MAIL_KINDS = new Set<FolderKind>(['calendar', 'contacts', 'tasks']);
+
+/** Verdadeiro para pastas que não são de e-mail (Calendário/Contatos/Tarefas). */
+export function isNonMailFolder(n: {
+  id: string;
+  name: string;
+  archiveName?: string;
+  containerClass?: string;
+}): boolean {
+  const kind =
+    folderKindOf(n.archiveName || '') ||
+    folderKindOf(n.id.startsWith('arc:') ? n.id.slice(4).split('/').pop() || '' : '') ||
+    folderKindOf(n.name);
+  return NON_MAIL_CC.has(n.containerClass || '') || (kind !== null && NON_MAIL_KINDS.has(kind));
+}
+
 export function mailFilterTree(nodes: FolderNode[]): FolderNode[] {
   const out: FolderNode[] = [];
   for (const n of nodes) {
-    const kind =
-      folderKindOf(n.archiveName || '') ||
-      folderKindOf(n.id.startsWith('arc:') ? n.id.slice(4).split('/').pop() || '' : '') ||
-      folderKindOf(n.name);
-    if (NON_MAIL_CC.has(n.containerClass) || (kind && NON_MAIL_KINDS.has(kind))) continue;
+    if (isNonMailFolder(n)) continue;
     out.push({ ...n, children: mailFilterTree(n.children) });
+  }
+  return out;
+}
+
+/** Módulo Email: somente as pastas de Calendário/Contatos/Tarefas — como a
+ *  Lista de pastas do Outlook, que mostra a árvore completa num só lugar.
+ *  Seletores de destino de mensagens continuam usando só mailFilterTree. */
+export function nonMailFilterTree(nodes: FolderNode[]): FolderNode[] {
+  const out: FolderNode[] = [];
+  for (const n of nodes) {
+    if (!isNonMailFolder(n)) continue;
+    out.push({ ...n, children: nonMailFilterTree(n.children) });
   }
   return out;
 }

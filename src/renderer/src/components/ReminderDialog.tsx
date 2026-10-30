@@ -13,6 +13,8 @@ export interface ReminderEvent {
   index: number;
   /** Identidade estável do item — resolve a posição atual no backend. */
   stableId?: string;
+  /** Módulo de origem do lembrete — 'tasks' para tarefas (padrão: calendário). */
+  module?: string;
 }
 
 const SNOOZE_MINUTES = [5, 10, 15, 30, 60];

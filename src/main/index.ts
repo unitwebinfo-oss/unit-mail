@@ -546,6 +546,25 @@ function calendarFolders(nodes: FolderNode[]): FolderNode[] {
   return out;
 }
 
+/** Procura pastas de tarefas na árvore de uma base. */
+function taskFolders(nodes: FolderNode[]): FolderNode[] {
+  const out: FolderNode[] = [];
+  const walk = (ns: FolderNode[]) => {
+    for (const n of ns) {
+      if (
+        n.containerClass === 'IPF.Task' ||
+        folderKindOf(n.name) === 'tasks' ||
+        folderKindOf(n.archiveName || '') === 'tasks'
+      ) {
+        out.push(n);
+      }
+      walk(n.children);
+    }
+  };
+  walk(nodes);
+  return out;
+}
+
 async function checkReminders(): Promise<void> {
   loadDismissedReminders();
   const now = Date.now();
@@ -609,6 +628,58 @@ async function checkReminders(): Promise<void> {
             folderId: cal.id,
             index: it.index,
             stableId: it.stableId,
+          });
+        }
+      }
+    }
+    // Tarefas com vencimento — mesmo mecanismo dos compromissos: dispara na
+    // data de vencimento (ou X min antes, se o item definir reminderMinutes).
+    for (const tf of taskFolders(tree)) {
+      let items;
+      try {
+        items = await svc.getItems(tf.id, 0, 400);
+      } catch {
+        continue;
+      }
+      for (const it of items) {
+        if (it.isTaskComplete || !it.dueDate) continue;
+        const start = new Date(it.dueDate).getTime();
+        if (isNaN(start)) continue;
+        if (it.reminderSet === false) continue;
+        const minBefore = it.reminderMinutes ?? 0;
+        const remindAt = start - minBefore * 60000;
+        const key = `${src.id}|${tf.id}|${it.stableId ?? it.index}|task|${it.dueDate}`;
+        if (remindedKeys.has(key) || dismissedReminders.has(key)) continue;
+        const snz = snoozedUntil.get(key);
+        if (snz) {
+          if (now < snz) continue;
+          snoozedUntil.delete(key);
+        }
+        // Janela: do horário do lembrete até o fim do dia seguinte ao vencimento
+        if (now >= remindAt && now <= start + 24 * 60 * 60000) {
+          remindedKeys.add(key);
+          const lang = appLanguage();
+          try {
+            showToast(
+              'reminder',
+              lang === 'en' ? `Task: ${it.subject}` : `Tarefa: ${it.subject}`,
+              `${lang === 'en' ? 'Due' : 'Vence'} ${new Date(it.dueDate).toLocaleString(
+                lang === 'en' ? 'en-US' : 'pt-BR',
+              )}`,
+            );
+          } catch {
+            // notificação pode falhar em ambientes sem suporte
+          }
+          mainWindow?.webContents.send('calendar:reminder', {
+            key,
+            subject: it.subject,
+            startTime: it.dueDate,
+            location: '',
+            sourceId: src.id,
+            folderId: tf.id,
+            index: it.index,
+            stableId: it.stableId,
+            module: 'tasks',
           });
         }
       }
@@ -990,6 +1061,37 @@ function attachContextMenu(win: BrowserWindow): void {
         {
           label: en ? 'Copy link address' : 'Copiar endereço do link',
           click: () => clipboard.writeText(p.linkURL),
+        },
+        { type: 'separator' },
+      );
+    }
+    if (p.mediaType === 'image' && p.srcURL) {
+      menu.push(
+        {
+          label: en ? 'Save image as…' : 'Salvar imagem como…',
+          click: () => {
+            // copyImageAt pega a imagem renderizada — funciona com cid:/data:
+            // (embutida no .eml) e http(s), sem depender do src.
+            win.webContents.copyImageAt(p.x, p.y);
+            const img = clipboard.readImage();
+            if (img.isEmpty()) {
+              if (/^https?:/i.test(p.srcURL)) win.webContents.downloadURL(p.srcURL);
+              return;
+            }
+            void dialog
+              .showSaveDialog(win, {
+                title: en ? 'Save image' : 'Salvar imagem',
+                defaultPath: 'imagem.png',
+                filters: [{ name: en ? 'Image' : 'Imagem', extensions: ['png'] }],
+              })
+              .then((r) => {
+                if (!r.canceled && r.filePath) writeFileSync(r.filePath, img.toPNG());
+              });
+          },
+        },
+        {
+          label: en ? 'Copy image' : 'Copiar imagem',
+          click: () => win.webContents.copyImageAt(p.x, p.y),
         },
         { type: 'separator' },
       );
@@ -2247,16 +2349,33 @@ function registerIpc(): void {
       try {
         const src = sourceManager.listAll().find((s) => s.id === input.sourceId);
         const kind = mailFolderKind(input.sourceId, input.folderId);
-        if (src?.filePath && kind !== 'deleted' && kind !== 'calendar') {
-          const delName = resolveStoreFolderName(src.filePath, 'deleted');
-          await sourceManager.moveItem(
-            input.sourceId,
-            input.folderId,
-            input.index,
-            input.sourceId,
-            `arc:${delName}`,
-            input.stableId,
-          );
+        if (src && kind !== 'deleted' && kind !== 'calendar') {
+          let delId: string | null = null;
+          if (src.filePath) {
+            delId = `arc:${resolveStoreFolderName(src.filePath, 'deleted')}`;
+          } else {
+            // Conta IMAP: a pasta de excluídos fica no próprio servidor —
+            // como o Outlook, o convite respondido some da Caixa de Entrada.
+            const find = (ns: FolderNode[]): FolderNode | null => {
+              for (const n of ns) {
+                if (folderKindOf(n.name) === 'deleted') return n;
+                const hit = find(n.children);
+                if (hit) return hit;
+              }
+              return null;
+            };
+            delId = find(await svc.getFolderTree())?.id ?? null;
+          }
+          if (delId) {
+            await sourceManager.moveItem(
+              input.sourceId,
+              input.folderId,
+              input.index,
+              input.sourceId,
+              delId,
+              input.stableId,
+            );
+          }
         }
       } catch {
         // remoção é best-effort — a resposta já foi enviada

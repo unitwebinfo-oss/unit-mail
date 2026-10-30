@@ -462,6 +462,8 @@ export default function App() {
         const sid = saved.slice(0, sep);
         const fid = saved.slice(sep + 1);
         const node = findNode(trees[sid] || [], fid);
+        // No e-mail vale qualquer pasta — a árvore mostra Calendário/Contatos/
+        // Tarefas junto das de e-mail, como a Lista de pastas do Outlook.
         const visible =
           node && (m === 'mail' || node.containerClass === cc);
         if (visible && list.some((s) => s.id === sid)) {
@@ -1012,7 +1014,7 @@ export default function App() {
     const tree = folderTrees[r.sourceId];
     const node = tree ? findNode(tree, r.folderId) : null;
     if (!node) return;
-    setModule('calendar');
+    setModule(r.module === 'tasks' ? 'tasks' : 'calendar');
     await loadFolder(r.sourceId, node);
     const d = await window.outlook.getItem(r.sourceId, r.folderId, r.index, r.stableId);
     if (d) setDetail(d);
