@@ -451,6 +451,38 @@ export default function App() {
     }
   }, [items]);
 
+  /**
+   * A pasta reindexou (chegou e-mail novo, exclusão em outra janela, sync):
+   * `selIndexes` e `detail.index` guardam posições da listagem anterior.
+   * Remapeia por stableId — o destaque fica na MESMA mensagem (como o
+   * Outlook) em vez de cair na recém-chegada enquanto o corpo mostra a
+   * antiga, e `detail.index` continua apontando para o item aberto.
+   */
+  const prevItemsRef = useRef<ItemSummary[]>([]);
+  useEffect(() => {
+    const prev = prevItemsRef.current;
+    prevItemsRef.current = items;
+    if (prev === items || !prev.length) return;
+    const keyOf = (m: ItemSummary) => m.stableId ?? `i${m.index}`;
+    const newIdxBySid = new Map(items.map((m) => [keyOf(m), m.index]));
+    const sidByOldIdx = new Map(prev.map((m) => [m.index, keyOf(m)]));
+    setSelIndexes((cur) => {
+      if (!cur.size) return cur;
+      const next = new Set<number>();
+      for (const ix of cur) {
+        const sid = sidByOldIdx.get(ix);
+        const ni = sid !== undefined ? newIdxBySid.get(sid) : undefined;
+        if (ni !== undefined) next.add(ni);
+      }
+      return next.size === cur.size && [...next].every((x) => cur.has(x)) ? cur : next;
+    });
+    const d = detailRefState.current.detail;
+    if (d) {
+      const ni = newIdxBySid.get(d.stableId ?? `i${d.index}`);
+      if (ni !== undefined && ni !== d.index) setDetail({ ...d, index: ni });
+    }
+  }, [items]);
+
   const selectDefaultFolder = useCallback(
     (m: ModuleId, list: MailSource[], trees: Record<string, FolderNode[]>) => {
       const cc = containerClassForModule(m);
@@ -1144,7 +1176,14 @@ export default function App() {
   const stableIdsOf = useCallback((indexes: number[]): (string | undefined)[] => {
     const byIdx = new Map(itemsRef.current.map((m) => [m.index, m.stableId]));
     const d = detailRefState.current.detail;
-    return indexes.map((ix) => byIdx.get(ix) ?? (d?.index === ix ? d.stableId : undefined));
+    return indexes.map((ix) => {
+      const listed = byIdx.get(ix);
+      // detail.index é a posição do item aberto no momento do clique; se a
+      // pasta reindexou e outro item já ocupa essa posição, a identidade
+      // alvo continua sendo a do detail — nunca a do intruso.
+      if (d?.index === ix && d.stableId && listed !== d.stableId) return d.stableId;
+      return listed ?? (d?.index === ix ? d.stableId : undefined);
+    });
   }, []);
 
   /** Move os itens selecionados para uma pasta por nome (Lixo eletrônico, Arquivo Morto…). */

@@ -3549,12 +3549,11 @@ body.dark .sync-dialog { box-shadow: 0 10px 30px rgba(0,0,0,.6); }
   box-shadow: 0 24px 64px rgba(0,0,0,0.32);
 }
 
-/* Aba Geral — cartões em grid de 2 colunas com respiro, não uma pilha apertada. */
+/* Aba Geral — lista vertical de cartões na largura toda. */
 .geral-grid {
   display: flex;
   flex-direction: column;
   gap: 14px;
-  max-width: 720px;
 }
 .geral-grid .set-card { display: flex; flex-direction: column; gap: 10px; }
 .geral-grid .set-card .fld { max-width: 300px; }
@@ -3858,6 +3857,34 @@ body.dark .btn-ghost.danger:hover:not(:disabled) { background: rgba(196, 43, 28,
 }
 .t-tag.overdue { background: #fde7e9; color: #c50f1f; }
 .t-tag.today { background: #fff4ce; color: #5c4a00; }
+
+/* Tarefas — alternância Lista/Calendário e grade mensal */
+.task-view-toggle {
+  display: flex; border: 1px solid var(--border); border-radius: 4px;
+  overflow: hidden; flex: 0 0 auto;
+}
+.task-view-toggle button {
+  border: none; background: var(--surface); color: var(--text-dim);
+  font-size: 11.5px; padding: 4px 10px; cursor: pointer;
+}
+.task-view-toggle button + button { border-left: 1px solid var(--border); }
+.task-view-toggle button.active { background: var(--blue); color: #fff; }
+.task-cal-area { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.cal-event.task { border-left-color: var(--blue); }
+.cal-event.task.overdue { background: #fde7e9; border-left-color: #c50f1f; color: #c50f1f; }
+.cal-event.task.today { background: #fff4ce; border-left-color: #caa800; }
+.cal-event.task.done { opacity: 0.6; text-decoration: line-through; }
+
+/* Resultado do teste de conta — caixa por etapa (entrada, saída) */
+.acct-test-result {
+  font-size: 12px; border-radius: 4px; padding: 8px 10px;
+  line-height: 1.55; word-break: break-word;
+}
+.acct-test-result.ok { background: #e7f4ea; color: #107c41; border: 1px solid #b6dfc2; }
+.acct-test-result.err { background: #fde7e9; color: #a4262c; border: 1px solid #f1aeb5; }
+.acct-test-result .stage { font-weight: 600; }
+body.dark .acct-test-result.ok { background: rgba(16,124,65,.16); color: #7fd9a0; border-color: rgba(16,124,65,.4); }
+body.dark .acct-test-result.err { background: rgba(164,38,44,.16); color: #f3a6aa; border-color: rgba(164,38,44,.45); }
 .task-progress {
   height: 4px; border-radius: 2px; background: var(--border);
   overflow: hidden; margin-top: 4px;

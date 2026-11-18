@@ -4,6 +4,8 @@ import { tmpdir } from 'os';
 import { randomUUID, createHash } from 'crypto';
 import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync, cpSync, readdirSync, statSync, rmSync } from 'fs';
 import { writeFile } from 'fs/promises';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
 import { sourceManager } from './sourceManager';
 import { PstService } from './pstService';
 import { ImapMailSource } from './imapSource';
@@ -1023,6 +1025,54 @@ function windowBgForTheme(): string {
   return dark ? '#171717' : '#f3f3f3';
 }
 
+const execFileAsync = promisify(execFile);
+
+/**
+ * Abre URL http(s) no navegador padrão do usuário.
+ *
+ * - Normaliza links sem esquema comuns em emails ("www.site.com",
+ *   "//site.com/x") — sem isso o xdg-open os trata como caminho de
+ *   arquivo e abre o gerenciador de arquivos.
+ * - No Linux, `shell.openExternal` → xdg-open: quando o handler do DE não
+ *   resolve (ex.: Firefox flatpak fora dos XDG_DATA_DIRS do processo),
+ *   cai nas alternatives x-www-browser — que podem apontar para outro
+ *   navegador (Chrome) ignorando o padrão real. `xdg-settings` lê a
+ *   escolha do usuário e `gtk-launch` a executa direto.
+ * - file:/cid:/javascript:/qualquer coisa que não parseie como URL →
+ *   nunca chega ao xdg-open (viraria caminho local).
+ */
+async function openExternalUrl(rawUrl: string): Promise<void> {
+  let url = rawUrl.trim();
+  if (url.startsWith('//')) url = `https:${url}`;
+  else if (/^www\./i.test(url)) url = `https://${url}`;
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return;
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return;
+  if (process.platform === 'linux') {
+    try {
+      const { stdout } = await execFileAsync('xdg-settings', ['get', 'default-web-browser'], {
+        timeout: 3000,
+      });
+      const desktopId = stdout.trim().replace(/\.desktop$/i, '');
+      if (desktopId) {
+        try {
+          await execFileAsync('gtk-launch', [desktopId, parsed.href], { timeout: 3000 });
+          return;
+        } catch {
+          // gtk-launch indisponível/falhou → cai no openExternal
+        }
+      }
+    } catch {
+      // xdg-settings indisponível → cai no openExternal
+    }
+  }
+  await shell.openExternal(parsed.href);
+}
+
 /**
  * Menu de contexto (botão direito) das janelas — cobre o corpo do email
  * dentro do iframe sandboxed (o evento do renderer não chega lá) e os
@@ -1054,7 +1104,7 @@ function attachContextMenu(win: BrowserWindow): void {
       if (/^https?:/i.test(p.linkURL)) {
         menu.push({
           label: en ? 'Open link in browser' : 'Abrir link no navegador',
-          click: () => void shell.openExternal(p.linkURL),
+          click: () => void openExternalUrl(p.linkURL),
         });
       }
       menu.push(
@@ -1147,10 +1197,13 @@ function createWindow(): BrowserWindow {
   // Links do corpo dos emails (iframe sandboxed geram popups que caem aqui):
   // http(s) abre no navegador do SO; mailto: abre rascunho no próprio app.
   win.webContents.setWindowOpenHandler(({ url }) => {
-    if (url.startsWith('http://') || url.startsWith('https://')) {
-      void shell.openExternal(url);
-    } else if (url.startsWith('mailto:')) {
+    if (url.startsWith('mailto:')) {
       win.webContents.send('mail:openMailto', url);
+    } else {
+      // http(s) abre no navegador do SO; demais esquemas (file:, cid:,
+      // about: de links relativos quebrados) são descartados pela
+      // validação interna — nunca viram caminho no xdg-open.
+      void openExternalUrl(url);
     }
     return { action: 'deny' };
   });
@@ -1326,11 +1379,10 @@ function registerIpc(): void {
     return shell.openPath(dir);
   });
 
-  // Abre URL externa no navegador do SO — somente http/https, nada mais.
+  // Abre URL externa no navegador padrão do SO — a normalização e a
+  // validação http/https ficam em openExternalUrl.
   ipcMain.handle('app:openExternal', (_e, url: string) => {
-    if (typeof url === 'string' && /^https?:\/\//i.test(url)) {
-      return shell.openExternal(url);
-    }
+    if (typeof url === 'string') return openExternalUrl(url);
   });
 
   // ---------- Pasta de dados (perfil portátil — modelo Thunderbird) ----------
@@ -2269,7 +2321,70 @@ function registerIpc(): void {
             .filter(Boolean)
             .join('\r\n')
         ).replace(/^METHOD:[^\r\n]*/m, 'METHOD:PUBLISH');
-        const eml = [
+        // Corpo rico: preserva o HTML original do convite (cartão do
+        // Google/Outlook com convidados, link da reunião e imagens inline
+        // já em data URI) — o compromisso salvo exibe as mesmas
+        // informações do convite aceito em vez de um resumo de 2 linhas.
+        const b64 = (s: string) => Buffer.from(s, 'utf8').toString('base64');
+        const wrap64 = (s: string) => s.replace(/.{1,76}/g, '$&\r\n').trim();
+        const plainBody =
+          detail.body ||
+          `Compromisso: ${inv.summary || detail.subject}${inv.location ? `\nLocal: ${inv.location}` : ''}`;
+        const bodyPart = detail.bodyHTML
+          ? [
+              '--ol-cal',
+              'Content-Type: multipart/alternative; boundary="ol-alt"',
+              '',
+              '--ol-alt',
+              'Content-Type: text/plain; charset=utf-8',
+              'Content-Transfer-Encoding: base64',
+              '',
+              wrap64(b64(plainBody)),
+              '--ol-alt',
+              'Content-Type: text/html; charset=utf-8',
+              'Content-Transfer-Encoding: base64',
+              '',
+              wrap64(b64(detail.bodyHTML)),
+              '--ol-alt--',
+            ].join('\r\n')
+          : [
+              '--ol-cal',
+              'Content-Type: text/plain; charset=utf-8',
+              'Content-Transfer-Encoding: base64',
+              '',
+              wrap64(b64(plainBody)),
+            ].join('\r\n');
+
+        // Anexos do convite (PDFs, notas de reunião…): menos o próprio .ics
+        // (regravado como PUBLISH) e imagens inline (já viraram data URI
+        // no HTML copiado acima).
+        const attachParts: string[] = [];
+        for (const a of detail.attachments ?? []) {
+          if (a.isInline || a.isEmbeddedMessage) continue;
+          const fn = (a.filename || '').toLowerCase();
+          if (fn.endsWith('.ics') || /text\/calendar|application\/ics/i.test(a.mimeTag || '')) {
+            continue;
+          }
+          try {
+            const data = await svc.getAttachmentData(input.folderId, input.index, a.index, input.stableId);
+            if (!data.dataBase64) continue;
+            const safeName = (a.filename || 'anexo').replace(/["\r\n]/g, '');
+            attachParts.push(
+              [
+                '--ol-cal',
+                `Content-Type: ${a.mimeTag || 'application/octet-stream'}; name="${safeName}"`,
+                'Content-Transfer-Encoding: base64',
+                `Content-Disposition: attachment; filename="${safeName}"`,
+                '',
+                wrap64(data.dataBase64.replace(/\s+/g, '')),
+              ].join('\r\n'),
+            );
+          } catch {
+            // anexo ilegível — o compromisso segue sem ele
+          }
+        }
+
+        const headers = [
           `From: ${toOrg}`,
           `To: ${account.email}`,
           `Subject: ${inv.summary || detail.subject}`,
@@ -2284,22 +2399,21 @@ function registerIpc(): void {
           dtEnd && `X-UM-Appt-End: ${inv.end || ''}`,
           inv.location && `X-UM-Appt-Location: ${inv.location}`,
           `X-UM-Appt-Organizer: ${toOrg}`,
+          (detail.allAttendees || detail.requiredAttendees) &&
+            `X-UM-Appt-Attendees: ${detail.allAttendees || detail.requiredAttendees}`,
           'X-UM-Appt-Reminder: 15',
           'Content-Type: multipart/mixed; boundary="ol-cal"',
-          '',
-          '--ol-cal',
-          'Content-Type: text/plain; charset=utf-8',
-          '',
-          `Compromisso: ${inv.summary || detail.subject}`,
-          inv.location ? `Local: ${inv.location}` : '',
-          '',
+        ]
+          .filter(Boolean)
+          .join('\r\n');
+        const icsPart = [
           '--ol-cal',
           'Content-Type: text/calendar; method=PUBLISH; name="invite.ics"',
           'Content-Disposition: attachment; filename="invite.ics"',
           '',
           eventIcs,
-          '--ol-cal--',
         ].join('\r\n');
+        const eml = [headers, '', bodyPart, icsPart, ...attachParts, '--ol-cal--'].join('\r\n');
         // O compromisso vai para o Calendário da base onde o convite chegou
         // (POP3 entrega na base vinculada à conta — é lá que o usuário olha).
         // Se essa base não é gravável (convite numa caixa IMAP — acct: não tem

@@ -64,6 +64,32 @@ function Field({
   );
 }
 
+/**
+ * Resultado do teste de conexão — cada etapa (POP3/IMAP • SMTP) em sua
+ * linha com a etiqueta em destaque, numa caixa verde/vermelha. Assim o
+ * usuário vê de cara QUAL servidor falhou e qual é a dica de correção.
+ */
+function TestResult({ msg }: { msg: string }) {
+  const ok = msg.startsWith('✓');
+  const err = msg.startsWith('✗');
+  if (!ok && !err) return <div style={{ fontSize: 12 }}>{msg}</div>;
+  const lines = msg.replace(/^[✓✗]\s*/, '').split(/\s*•\s*/).filter(Boolean);
+  return (
+    <div className={`acct-test-result ${ok ? 'ok' : 'err'}`}>
+      {lines.map((l, i) => {
+        const stage = l.match(/^(POP3|IMAP|SMTP)\b[:—\s]*/)?.[1];
+        const rest = stage ? l.replace(/^(POP3|IMAP|SMTP)\b[:—\s]*/, '') : l;
+        return (
+          <div key={i}>
+            {stage && <span className="stage">{stage}: </span>}
+            {rest}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 /** Regra em edição — pode ser nova (sem id) ou existente. */
 type RuleDraft = Omit<MailRule, 'id'> & { id?: string };
 
@@ -884,7 +910,7 @@ export function AccountsSettings({
       // do zero com a conta já reconectada. Nada depois disso executa.
       window.location.reload();
     } catch (e) {
-      setTestMsg(t('Erro ao salvar: {msg}', { msg: (e as Error).message }));
+      setTestMsg(`✗ ${t('Erro ao salvar: {msg}', { msg: (e as Error).message })}`);
     } finally {
       setBusy(false);
     }
@@ -1765,7 +1791,7 @@ export function AccountsSettings({
               </>
               )}
 
-              {testMsg && <div style={{ fontSize: 12 }}>{testMsg}</div>}
+              {testMsg && <TestResult msg={testMsg} />}
               </div>
               <div className="acct-foot">
                 <button disabled={busy} onClick={test} className="btn">
@@ -2029,14 +2055,7 @@ export function AccountsSettings({
                             {t('Esta conta tem assinatura do Outlook — depois da importação ela aparece como sugestão na aba Assinaturas.')}
                           </span>
                         )}
-                        {impTest && (
-                          <div
-                            className="run-now-msg"
-                            style={{ marginTop: 8, color: impTest.startsWith('✓') ? 'var(--ok, #107c41)' : '#a4262c' }}
-                          >
-                            {impTest}
-                          </div>
-                        )}
+                        {impTest && <TestResult msg={impTest} />}
                         {impErr && <div className="rule-warn">{impErr}</div>}
                         <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
                           <button

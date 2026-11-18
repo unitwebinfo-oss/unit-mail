@@ -41,6 +41,37 @@ export function externalizeLinks(html: string): string {
   return html.replace(/<a(?=[\s>])/gi, '<a target="_blank" rel="noopener noreferrer"');
 }
 
+/** URLs em corpo de texto puro viram <a> clicável — o <pre> antes mostrava
+ *  texto seco (links de fatura/boleto que chegam sem HTML ficavam mortos). */
+function linkifyText(text: string): React.ReactNode[] {
+  const out: React.ReactNode[] = [];
+  const re = /(https?:\/\/[^\s<>"']+|www\.[^\s<>"']+)/gi;
+  let last = 0;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text))) {
+    const trail = m[0].match(/[.,;:!?)\]}»"]+$/)?.[0] ?? '';
+    const url = m[0].slice(0, m[0].length - trail.length);
+    if (m.index > last) out.push(text.slice(last, m.index));
+    const href = /^https?:/i.test(url) ? url : `https://${url}`;
+    out.push(
+      <a
+        key={`lk${m.index}`}
+        href={href}
+        onClick={(e) => {
+          e.preventDefault();
+          void window.outlook.openExternal(href);
+        }}
+      >
+        {url}
+      </a>,
+      trail,
+    );
+    last = m.index + m[0].length;
+  }
+  if (last < text.length) out.push(text.slice(last));
+  return out;
+}
+
 /** Remove <script> do HTML exibido — o iframe sandboxed já bloquearia a
  *  execução, mas tirar da árvore elimina os warnings "Blocked script
  *  execution" no console e enxuga o documento. */
@@ -105,8 +136,11 @@ function MailBody({ item, loadRemoteImages }: { item: ItemDetail; loadRemoteImag
             const doc = (e.currentTarget as HTMLIFrameElement).contentDocument;
             doc?.addEventListener('click', (ev) => {
               const a = (ev.target as HTMLElement | null)?.closest?.('a[href]');
-              const href = a?.getAttribute('href') || '';
-              if (!/^https?:/i.test(href)) return;
+              const href = (a?.getAttribute('href') || '').trim();
+              // http(s), //protocol-relative e www. sem esquema → navegador
+              // do SO (o main normaliza/valida). mailto: segue pelo popup →
+              // rascunho no app; demais esquemas morrem no deny do handler.
+              if (!/^(https?:|\/\/|www\.)/i.test(href)) return;
               ev.preventDefault();
               void window.outlook.openExternal(href);
             });
@@ -115,7 +149,7 @@ function MailBody({ item, loadRemoteImages }: { item: ItemDetail; loadRemoteImag
       </>
     );
   }
-  return <pre>{item.body || t('(sem conteúdo)')}</pre>;
+  return <pre>{item.body ? linkifyText(item.body) : t('(sem conteúdo)')}</pre>;
 }
 
 /** Ícone + cor do anexo por extensão (estilo dos ícones de arquivo do SO). */
@@ -212,7 +246,7 @@ function AppointmentDetail({ item, loadRemoteImages }: { item: ItemDetail; loadR
 
 function ContactDetailView({ item }: { item: ItemDetail }) {
   const c = item.contact;
-  if (!c) return <pre>{item.body}</pre>;
+  if (!c) return <pre>{linkifyText(item.body)}</pre>;
   const rows: Array<[string, string]> = [
     ['Nome', [c.displayName, `${c.givenName} ${c.middleName} ${c.surname}`.trim()].filter(Boolean)[0]],
     ['Empresa', c.company],
@@ -248,7 +282,7 @@ const TASK_STATUS = ['Não iniciada', 'Em andamento', 'Concluída', 'Aguardando'
 
 function TaskDetailView({ item }: { item: ItemDetail }) {
   const task = item.task;
-  if (!task) return <pre>{item.body}</pre>;
+  if (!task) return <pre>{linkifyText(item.body)}</pre>;
   return (
     <div className="detail-card">
       <h2>{item.subject}</h2>
