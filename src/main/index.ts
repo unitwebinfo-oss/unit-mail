@@ -3344,6 +3344,10 @@ if (!gotSingleInstanceLock) {
  */
 function installLinuxDesktopEntry(): void {
   if (process.platform !== 'linux') return;
+  // Em dev/teste o process.execPath é o electron do node_modules: gravar o
+  // atalho aqui sobrescreveria o do app instalado e o menu abriria só o
+  // shell padrão do Electron. Só empacotado (ex.: /opt) pode registrar.
+  if (!app.isPackaged) return;
   try {
     const home = app.getPath('home');
     const appsDir = join(home, '.local', 'share', 'applications');

@@ -461,6 +461,9 @@ export default function App() {
    * antiga, e `detail.index` continua apontando para o item aberto.
    */
   const prevItemsRef = useRef<ItemSummary[]>([]);
+  /** Quando a própria exclusão/movimentação já gravou a seleção com os índices
+   *  NOVOS, a remapagem não pode reinterpretá-la como índices antigos. */
+  const selAlreadyNew = useRef(false);
   useEffect(() => {
     const prev = prevItemsRef.current;
     prevItemsRef.current = items;
@@ -468,7 +471,9 @@ export default function App() {
     const keyOf = (m: ItemSummary) => m.stableId ?? `i${m.index}`;
     const newIdxBySid = new Map(items.map((m) => [keyOf(m), m.index]));
     const sidByOldIdx = new Map(prev.map((m) => [m.index, keyOf(m)]));
-    setSelIndexes((cur) => {
+    if (selAlreadyNew.current) {
+      selAlreadyNew.current = false;
+    } else setSelIndexes((cur) => {
       if (!cur.size) return cur;
       const next = new Set<number>();
       for (const ix of cur) {
@@ -1261,10 +1266,10 @@ export default function App() {
   const delBusy = useRef(false);
   const delAgain = useRef(false);
   const doDeleteRef = useRef<() => void>(() => {});
+  const [delTick, setDelTick] = useState(0);
 
   /** Exclui os itens de `detailRef` — chamado após a confirmação. */
   const doDeleteItem = useCallback(async () => {
-    doDeleteRef.current = () => void doDeleteItem();
     if (delBusy.current) {
       delAgain.current = true;
       return;
@@ -1374,6 +1379,7 @@ export default function App() {
           return { ...m, index: ni };
         });
         detailCache.current.clear(); // índices mudaram — cache por índice é inválido
+        selAlreadyNew.current = true;
         setItems(reindexed);
         // Seleciona o sucessor na hora — o detalhe já estava sendo exibido
         // pela pré-seleção; esta chamada só "firma" o índice novo e a ordem
@@ -1411,9 +1417,16 @@ export default function App() {
     delBusy.current = false;
     if (delAgain.current) {
       delAgain.current = false;
-      setTimeout(() => void doDeleteRef.current(), 0);
+      setDelTick((n) => n + 1);
     }
   }, [detail, detailRef, selected, items, itemCount, loadFolder, refreshSources, targetIndexes, selectItem, folderTrees, lang]);
+
+  // A exclusão enfileirada roda com o estado do PRÓXIMO render (sucessor
+  // recém-selecionado, lista já reindexada) — nunca com a closure antiga.
+  doDeleteRef.current = () => void doDeleteItem();
+  useEffect(() => {
+    if (delTick) doDeleteRef.current();
+  }, [delTick]);
 
   /**
    * Exclui a(s) mensagem(ns) selecionada(s). Fora da lixeira move direto para
@@ -2149,6 +2162,7 @@ export default function App() {
             return { ...m, index: ni };
           });
           detailCache.current.clear();
+          selAlreadyNew.current = true;
           setItems(reindexed);
           setItemCount((c) => Math.max(0, c - 1));
           const next =
@@ -2344,6 +2358,7 @@ export default function App() {
           return { ...m, index: ni };
         });
         detailCache.current.clear();
+        selAlreadyNew.current = true;
         setItems(reindexed);
         const next =
           (nxtItem
