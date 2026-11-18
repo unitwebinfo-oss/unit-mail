@@ -1049,9 +1049,13 @@ async function openExternalUrl(rawUrl: string): Promise<void> {
   try {
     parsed = new URL(url);
   } catch {
+    log.info('links', `descartado (URL inválida): ${rawUrl}`);
     return;
   }
-  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return;
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    log.info('links', `descartado (esquema ${parsed.protocol}): ${rawUrl}`);
+    return;
+  }
   if (process.platform === 'linux') {
     try {
       const { stdout } = await execFileAsync('xdg-settings', ['get', 'default-web-browser'], {
@@ -1061,15 +1065,17 @@ async function openExternalUrl(rawUrl: string): Promise<void> {
       if (desktopId) {
         try {
           await execFileAsync('gtk-launch', [desktopId, parsed.href], { timeout: 3000 });
+          log.info('links', `abrindo ${parsed.href} via gtk-launch ${desktopId}`);
           return;
-        } catch {
-          // gtk-launch indisponível/falhou → cai no openExternal
+        } catch (err) {
+          log.error('links', `gtk-launch ${desktopId} falhou: ${(err as Error).message}`);
         }
       }
-    } catch {
-      // xdg-settings indisponível → cai no openExternal
+    } catch (err) {
+      log.error('links', `xdg-settings falhou: ${(err as Error).message}`);
     }
   }
+  log.info('links', `abrindo ${parsed.href} via shell.openExternal`);
   await shell.openExternal(parsed.href);
 }
 

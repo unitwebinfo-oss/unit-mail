@@ -3870,6 +3870,25 @@ body.dark .btn-ghost.danger:hover:not(:disabled) { background: rgba(196, 43, 28,
 .task-view-toggle button + button { border-left: 1px solid var(--border); }
 .task-view-toggle button.active { background: var(--blue); color: #fff; }
 .task-cal-area { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+/* Tarefas em tela cheia — mesmo padrão do Calendário */
+.tasks-full .task-main { overflow: hidden; }
+.tasks-full .task-main .task-list { flex: 1; min-height: 0; border: 1px solid var(--border); }
+.tasks-full .task-main .cal-grid { min-height: 0; }
+.task-side-new { padding: 10px 12px 4px; }
+.task-side-new .inp { width: 100%; box-sizing: border-box; }
+.task-sum {
+  display: flex; justify-content: space-between; align-items: center;
+  font-size: 12px; padding: 5px 2px; border-bottom: 1px solid var(--border);
+}
+.task-sum b { font-weight: 600; }
+.task-sum.overdue b { color: #c50f1f; }
+.task-sum.today b { color: #8a6d00; }
+.task-head-count { display: inline-flex; gap: 8px; align-items: center; margin-left: 12px; font-size: 12px; font-weight: 400; color: var(--muted); }
+.task-progress.wide { margin: 12px 0 8px; height: 6px; }
+.task-inspect-body {
+  white-space: pre-wrap; word-wrap: break-word; font-family: inherit;
+  font-size: 13px; margin: 8px 0 0; color: var(--text);
+}
 .cal-event.task { border-left-color: var(--blue); }
 .cal-event.task.overdue { background: #fde7e9; border-left-color: #c50f1f; color: #c50f1f; }
 .cal-event.task.today { background: #fff4ce; border-left-color: #caa800; }

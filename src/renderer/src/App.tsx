@@ -118,6 +118,8 @@ export default function App() {
   const [detailRef, setDetailRef] = useState<{ sourceId: string; folderId: string } | null>(null);
   /** Spinner leve dentro do painel de leitura (não bloqueia a tela). */
   const [detailLoading, setDetailLoading] = useState(false);
+  /** Tarefa a abrir no inspetor da aba Tarefas (vinda de um lembrete). */
+  const [taskOpen, setTaskOpen] = useState<ItemDetail | null>(null);
   /**
    * Cache de detalhes por mensagem — clicar de novo num item já lido é
    * instantâneo (o getItem de PST re-ler o arquivo todo seria pesado).
@@ -1049,7 +1051,8 @@ export default function App() {
     setModule(r.module === 'tasks' ? 'tasks' : 'calendar');
     await loadFolder(r.sourceId, node);
     const d = await window.outlook.getItem(r.sourceId, r.folderId, r.index, r.stableId);
-    if (d) setDetail(d);
+    if (d && r.module === 'tasks') setTaskOpen(d);
+    else if (d) setDetail(d);
     dismissReminderKey(r.key);
     void window.outlook.snoozeReminder?.(r.key, 0);
   }, [folderTrees, loadFolder]);
@@ -2967,27 +2970,17 @@ export default function App() {
               </>
             )}
             {module === 'tasks' && (
-              <>
-                <TasksModule
-                  folder={selected?.folder ?? null}
-                  sourceId={selected?.sourceId ?? null}
-                  items={items}
-                  selectedIndex={detail?.index ?? null}
-                  onSelect={selectItem}
-                  onEditItem={openItemEditor}
-                  onChanged={() => selected && void loadFolder(selected.sourceId, selected.folder, true)}
-                />
-                <ReadingPane
-                  item={detail}
-                  loading={detailLoading}
-                  onSaveAttachment={saveAttachment}
-                  onOpenAttachment={openAttachment}
-                  onSaveAllAttachments={saveAllAttachments}
-                  loadRemoteImages={loadImages}
-                  onRespondInvite={respondInvite}
-                  onEditItem={editDetailCb}
-                />
-              </>
+              <TasksModule
+                folder={selected?.folder ?? null}
+                sourceId={selected?.sourceId ?? null}
+                items={items}
+                selectedIndex={detail?.index ?? null}
+                onSelect={selectItem}
+                onEditItem={openItemEditor}
+                onChanged={() => selected && void loadFolder(selected.sourceId, selected.folder, true)}
+                openDetail={taskOpen}
+                onOpenDetailHandled={() => setTaskOpen(null)}
+              />
             )}
           </div>
           <ModuleBar

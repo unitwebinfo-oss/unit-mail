@@ -57,7 +57,7 @@ interface CalEvent extends ItemSummary {
 }
 
 /** Mini-calendário do painel esquerdo (mês inteiro, clique navega). */
-function MiniMonth({
+export function MiniMonth({
   viewDate,
   selectedDay,
   onPick,
