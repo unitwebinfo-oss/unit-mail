@@ -2046,46 +2046,58 @@ body {
   padding: 12px 18px; border-top: 1px solid var(--border);
 }
 
-/* Vínculo assinatura → contas: tabela com avatar, pílulas e "marcar todas" */
-.sig-acct-table { display: flex; flex-direction: column; }
+/* Vínculo assinatura → contas: tabela compacta — uma linha por conta,
+   lista com rolagem interna (o diálogo não estica com muitas contas). */
+.sig-acct-table {
+  display: flex; flex-direction: column;
+  max-height: 240px; overflow-y: auto; min-height: 0;
+}
 .sig-acct-head {
   display: grid; grid-template-columns: minmax(0, 1fr) auto auto;
-  gap: 14px; align-items: center; padding: 4px 8px 8px;
-  font-size: 10.5px; font-weight: 600; color: var(--text-dim);
+  gap: 12px; align-items: center; padding: 0 8px 6px;
+  font-size: 10px; font-weight: 600; color: var(--text-dim);
   text-transform: uppercase; letter-spacing: 0.3px;
   border-bottom: 1px solid var(--border);
+  position: sticky; top: 0; background: var(--surface); z-index: 1;
 }
 .sig-col-hdr {
-  display: inline-flex; align-items: center; gap: 6px;
-  background: none; border: none; padding: 2px 6px; border-radius: 5px;
+  display: inline-flex; align-items: center; gap: 5px;
+  background: none; border: none; padding: 2px 4px; border-radius: 4px;
   font: inherit; color: inherit; cursor: pointer;
 }
 .sig-col-hdr:hover { color: var(--text); background: var(--surface-mid); }
 .sig-col-hdr .sig-all-box {
   display: inline-flex; align-items: center; justify-content: center;
-  width: 14px; height: 14px; font-size: 10px; line-height: 1;
-  border: 1px solid var(--border); border-radius: 4px; color: transparent;
+  width: 12px; height: 12px; font-size: 9px; line-height: 1;
+  border: 1px solid var(--border); border-radius: 3px; color: transparent;
 }
 .sig-col-hdr.all-on .sig-all-box {
   background: var(--blue); border-color: var(--blue); color: #fff;
 }
 .sig-acct-row {
   display: grid; grid-template-columns: minmax(0, 1fr) auto auto;
-  gap: 14px; align-items: center; padding: 8px;
+  gap: 12px; align-items: center; padding: 4px 8px;
 }
 .sig-acct-row + .sig-acct-row { border-top: 1px solid var(--border); }
-.sig-acct-row:hover { background: var(--blue-hover); border-radius: 8px; }
-.sig-acct-who { display: flex; align-items: center; gap: 10px; min-width: 0; }
-.sig-acct-who .acct-avatar { width: 30px; height: 30px; font-size: 12px; }
+.sig-acct-row:hover { background: var(--blue-hover); }
+.sig-acct-who { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.sig-acct-who .acct-avatar { width: 22px; height: 22px; font-size: 10px; }
+/* Nome e e-mail na MESMA linha — uma linha por conta, lista compacta */
+.sig-acct-line {
+  flex-direction: row; align-items: baseline; gap: 8px; min-width: 0;
+  font-size: 12px;
+}
+.sig-acct-line .acct-name { font-size: 12px; font-weight: 500; }
+.sig-acct-line .acct-sub { flex-shrink: 0; font-size: 10.5px; }
 .sig-pill {
-  min-width: 88px; padding: 4px 12px; font-size: 11.5px; font-weight: 600;
-  border: 1px solid var(--border); border-radius: 14px;
+  min-width: 68px; padding: 2px 10px; font-size: 10.5px; font-weight: 600;
+  border: 1px solid var(--border); border-radius: 11px;
   background: var(--surface); color: var(--text-dim); cursor: pointer;
   transition: background 0.12s, color 0.12s, border-color 0.12s;
 }
 .sig-pill:hover { border-color: var(--blue-light); color: var(--text); }
 .sig-pill.on { background: var(--blue); border-color: var(--blue); color: #fff; }
-.sig-acct-note { font-size: 11px; color: var(--text-dim); padding-top: 8px; }
+.sig-acct-note { font-size: 10.5px; color: var(--text-dim); padding-top: 6px; }
 
 /* Executar regras agora — lista de regras com checkbox */
 .run-now-rules {

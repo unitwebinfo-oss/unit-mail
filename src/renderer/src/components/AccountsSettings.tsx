@@ -2318,7 +2318,7 @@ export function AccountsSettings({
                               <span className="acct-avatar">
                                 {(a.label || a.email || '?').trim().charAt(0).toUpperCase()}
                               </span>
-                              <span className="acct-info">
+                              <span className="acct-info sig-acct-line">
                                 <span className="acct-name acct-label">{a.label || a.email}</span>
                                 <span className="acct-sub">
                                   {a.label && a.label !== a.email ? `${a.email} · ` : ''}
