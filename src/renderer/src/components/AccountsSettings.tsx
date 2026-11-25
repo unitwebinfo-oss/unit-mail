@@ -2275,76 +2275,80 @@ export function AccountsSettings({
                     </span>
                   )}
                   {accounts.length > 0 && (
-                    <>
+                    <div className="sig-acct-table">
+                      <div className="sig-acct-head">
+                        <span>{t('Conta')}</span>
+                        {(['new', 'reply'] as const).map((k) => {
+                          const all = accounts.every((a) => sigAssign[a.id]?.[k]);
+                          return (
+                            <button
+                              key={k}
+                              type="button"
+                              className={`sig-col-hdr${all ? ' all-on' : ''}`}
+                              title={t('Marcar/desmarcar todas as contas')}
+                              onClick={() =>
+                                setSigAssign((prev) => {
+                                  const next = { ...prev };
+                                  for (const a of accounts) {
+                                    next[a.id] = {
+                                      ...(next[a.id] || { new: false, reply: false }),
+                                      [k]: !all,
+                                    };
+                                  }
+                                  return next;
+                                })
+                              }
+                            >
+                              {k === 'new' ? t('Novas') : t('Respostas')}
+                              <span className="sig-all-box">{all ? '✓' : ''}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
                       {accounts.map((a) => {
                         const asg = sigAssign[a.id] || { new: false, reply: false };
-                        const chk: React.CSSProperties = {
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: 4,
-                          fontSize: 11.5,
-                          color: 'var(--text-dim)',
-                          cursor: 'pointer',
-                          whiteSpace: 'nowrap',
-                        };
+                        const toggle = (k: 'new' | 'reply') =>
+                          setSigAssign({
+                            ...sigAssign,
+                            [a.id]: { ...asg, [k]: !asg[k] },
+                          });
                         return (
-                          <div
-                            key={a.id}
-                            style={{
-                              display: 'grid',
-                              gridTemplateColumns: '1fr auto auto',
-                              gap: '2px 14px',
-                              alignItems: 'center',
-                              padding: '3px 0',
-                              borderTop: '1px dashed var(--border)',
-                            }}
-                          >
-                            <span
-                              style={{
-                                fontSize: 12,
-                                overflow: 'hidden',
-                                textOverflow: 'ellipsis',
-                                whiteSpace: 'nowrap',
-                              }}
-                              title={a.email}
-                            >
-                              {a.label || a.email}
+                          <div key={a.id} className="sig-acct-row">
+                            <span className="sig-acct-who">
+                              <span className="acct-avatar">
+                                {(a.label || a.email || '?').trim().charAt(0).toUpperCase()}
+                              </span>
+                              <span className="acct-info">
+                                <span className="acct-name acct-label">{a.label || a.email}</span>
+                                <span className="acct-sub">
+                                  {a.label && a.label !== a.email ? `${a.email} · ` : ''}
+                                  {a.protocol === 'imap' ? 'IMAP' : 'POP3'}
+                                </span>
+                              </span>
                             </span>
-                            <label style={chk} title={t('Novas mensagens')}>
-                              <input
-                                type="checkbox"
-                                style={{ margin: 0 }}
-                                checked={asg.new}
-                                onChange={(e) =>
-                                  setSigAssign({
-                                    ...sigAssign,
-                                    [a.id]: { ...asg, new: e.target.checked },
-                                  })
-                                }
-                              />
+                            <button
+                              type="button"
+                              className={`sig-pill${asg.new ? ' on' : ''}`}
+                              title={t('Novas mensagens')}
+                              onClick={() => toggle('new')}
+                            >
                               {t('Novas')}
-                            </label>
-                            <label style={chk} title={t('Respostas e encaminhamentos')}>
-                              <input
-                                type="checkbox"
-                                style={{ margin: 0 }}
-                                checked={asg.reply}
-                                onChange={(e) =>
-                                  setSigAssign({
-                                    ...sigAssign,
-                                    [a.id]: { ...asg, reply: e.target.checked },
-                                  })
-                                }
-                              />
+                            </button>
+                            <button
+                              type="button"
+                              className={`sig-pill${asg.reply ? ' on' : ''}`}
+                              title={t('Respostas e encaminhamentos')}
+                              onClick={() => toggle('reply')}
+                            >
                               {t('Respostas')}
-                            </label>
+                            </button>
                           </div>
                         );
                       })}
-                      <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>
+                      <span className="sig-acct-note">
                         {t('Os vínculos são aplicados ao clicar em Salvar.')}
                       </span>
-                    </>
+                    </div>
                   )}
                 </div>
               </div>

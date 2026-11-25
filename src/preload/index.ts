@@ -112,6 +112,8 @@ export interface OutlookApi {
   }>;
   /** Avisa ao main que o renderer pintou — libera a janela para exibição. */
   appReady(): void;
+  /** Botões da barra de título HTML (Linux — janela sem moldura do SO). */
+  winControl(action: 'min' | 'max' | 'close'): void;
   /** Abre a pasta de dados do app no explorador de arquivos. */
   openDataDir(): Promise<string>;
   /** Abre uma URL http(s) no navegador padrão do sistema. */
@@ -570,6 +572,7 @@ const api: OutlookApi = {
   /** Sinaliza o primeiro paint real do renderer — a janela só é exibida
    *  depois disso (splash → app já pintado, sem flash em branco). */
   appReady: () => ipcRenderer.send('app:firstPaint'),
+  winControl: (action) => ipcRenderer.send('win:control', action),
   openDataDir: () => ipcRenderer.invoke('app:openDataDir'),
   openExternal: (url) => ipcRenderer.invoke('app:openExternal', url),
   checkUpdate: () => ipcRenderer.invoke('app:checkUpdate'),

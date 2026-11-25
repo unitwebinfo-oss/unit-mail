@@ -452,6 +452,11 @@ export function MessageList({
   );
   // Âncora do Shift-clique (posição na ordem exibida)
   const anchorRef = React.useRef<number | null>(null);
+  // Âncora é uma posição na lista achatada — vale só para ESTA pasta/filtro;
+  // reaproveitar a de outra lista fazia Shift+seta marcar um intervalo errado.
+  React.useEffect(() => {
+    anchorRef.current = null;
+  }, [listKey]);
   const [msgCtx, setMsgCtx] = React.useState<MsgCtx | null>(null);
   const catById = React.useMemo(
     () => new Map((categories ?? []).map((c) => [c.id, c])),
@@ -914,7 +919,17 @@ export function MessageList({
             if (!flat.length) return;
             e.preventDefault();
             const dir = e.key === 'ArrowDown' ? 1 : -1;
-            const cur = flat.findIndex((m) => m.index === selectedIndex);
+            // Base: a linha DESTACADA (o que o usuário vê selecionado), não
+            // detail.index — depois de excluir/mover o índice do detalhe pode
+            // ficar obsoleto e a seta caía numa linha errada (ex.: o fim da
+            // lista). Fallback: âncora → linha destacada → detalhe → borda.
+            let cur = -1;
+            const anchor = anchorRef.current;
+            if (anchor !== null && flat[anchor] && selIndexes.has(flat[anchor].index)) {
+              cur = anchor;
+            }
+            if (cur < 0) cur = flat.findIndex((m) => selIndexes.has(m.index));
+            if (cur < 0) cur = flat.findIndex((m) => m.index === selectedIndex);
             const pos =
               cur < 0
                 ? dir > 0

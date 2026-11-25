@@ -25,7 +25,7 @@ interface HeaderMeta {
 
 type HeaderCache = Record<string, HeaderMeta>; // chave: uidl
 
-import { decodeMimeWords, getHeader, parseFrom } from './mailHeaders';
+import { decodeMimeWords, getHeader, parseFrom, parseMailDate, parseReceivedDate } from './mailHeaders';
 
 /** Backend POP3 — o servidor não tem pastas nem flags; só a caixa de entrada. */
 export class Pop3MailSource implements MailBackend {
@@ -191,14 +191,16 @@ export class Pop3MailSource implements MailBackend {
   private async fetchMeta(c: Pop3Client, num: number): Promise<HeaderMeta> {
     const raw = await c.top(num);
     const from = parseFrom(getHeader(raw, 'From'));
-    const dateStr = getHeader(raw, 'Date');
-    const d = dateStr ? new Date(dateStr) : null;
+    // Date: malformado → parser leniente; sem Date: → topo do Received:
+    const d =
+      parseMailDate(getHeader(raw, 'Date')) ??
+      parseReceivedDate(getHeader(raw, 'Received'));
     return {
       subject: getHeader(raw, 'Subject'),
       fromName: from.name,
       fromAddr: from.addr,
       to: getHeader(raw, 'To'),
-      date: d && !isNaN(d.getTime()) ? d.toISOString() : null,
+      date: d ? d.toISOString() : null,
       read: false,
     };
   }

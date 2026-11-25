@@ -129,7 +129,13 @@ export function TasksModule({
   const [newSubject, setNewSubject] = useState('');
   const [busy, setBusy] = useState<number | null>(null);
   const [showDone, setShowDone] = useState(true);
-  const [view, setView] = useState<'list' | 'calendar'>('list');
+  // Padrão = Calendário (pedido do usuário); a última escolha fica persistida
+  const [view, setView] = useState<'list' | 'calendar'>(() =>
+    localStorage.getItem('tasks.view') === 'list' ? 'list' : 'calendar',
+  );
+  useEffect(() => {
+    localStorage.setItem('tasks.view', view);
+  }, [view]);
   const [viewDate, setViewDate] = useState(() => startOfMonth(new Date()));
   const [selectedDay, setSelectedDay] = useState(() => taskDayKey(new Date()));
   const [inspect, setInspect] = useState<{ ref: TaskRef; detail: ItemDetail } | null>(null);

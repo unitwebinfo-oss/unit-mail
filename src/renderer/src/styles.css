@@ -88,6 +88,33 @@ body {
 .win-titlebar .win-title {
   opacity: 0.95;
 }
+/* Botões de janela em HTML (Linux — frame:false). Sem a cápsula/sombra que o
+   titleBarOverlay do Chromium desenhava; visuais planos estilo Windows. */
+.win-titlebar.custom-btns {
+  padding-right: 0; /* botões encostam na borda direita */
+}
+.win-btns {
+  margin-left: auto;
+  display: flex;
+  align-items: stretch;
+  align-self: stretch;
+  -webkit-app-region: no-drag; /* a barra inteira é área de arraste */
+}
+.win-btn {
+  width: 46px;
+  border: none;
+  background: transparent;
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+.win-btn:hover { background: rgba(255, 255, 255, 0.16); }
+.win-btn:active { background: rgba(255, 255, 255, 0.24); }
+.win-btn.close:hover { background: #e81123; }
+.win-btn.close:active { background: #c50f1f; }
 /* Selo "Beta" ao lado do título — mesma faixa azul, destaque discreto. */
 .beta-pill {
   font-size: 10px;
@@ -1845,6 +1872,40 @@ body {
   color: #404040;
 }
 
+/* Wrapper posicionado do editor — hospeda o overlay de seleção de imagem */
+.compose-editor-wrap {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.compose-editor-wrap .compose-editor {
+  flex: 1;
+  min-height: 0;
+}
+/* Seleção de imagem no corpo do compose: contorno + alças nas 4 quinas
+   (o contentEditable do Chromium não oferece as alças do Outlook) */
+.img-sel-box {
+  position: absolute;
+  border: 1.5px solid var(--blue);
+  pointer-events: none; /* cliques passam para a imagem — só as alças capturam */
+  z-index: 6;
+}
+.img-handle {
+  position: absolute;
+  width: 9px;
+  height: 9px;
+  background: #fff;
+  border: 1.5px solid var(--blue);
+  border-radius: 50%;
+  pointer-events: auto;
+}
+.img-handle.nw { left: -6px; top: -6px; cursor: nwse-resize; }
+.img-handle.ne { right: -6px; top: -6px; cursor: nesw-resize; }
+.img-handle.sw { left: -6px; bottom: -6px; cursor: nesw-resize; }
+.img-handle.se { right: -6px; bottom: -6px; cursor: nwse-resize; }
+
 /* Editor rico reutilizável (assinaturas) */
 .rte {
   display: flex;
@@ -1984,6 +2045,47 @@ body {
   display: flex; justify-content: flex-end; gap: 8px;
   padding: 12px 18px; border-top: 1px solid var(--border);
 }
+
+/* Vínculo assinatura → contas: tabela com avatar, pílulas e "marcar todas" */
+.sig-acct-table { display: flex; flex-direction: column; }
+.sig-acct-head {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 14px; align-items: center; padding: 4px 8px 8px;
+  font-size: 10.5px; font-weight: 600; color: var(--text-dim);
+  text-transform: uppercase; letter-spacing: 0.3px;
+  border-bottom: 1px solid var(--border);
+}
+.sig-col-hdr {
+  display: inline-flex; align-items: center; gap: 6px;
+  background: none; border: none; padding: 2px 6px; border-radius: 5px;
+  font: inherit; color: inherit; cursor: pointer;
+}
+.sig-col-hdr:hover { color: var(--text); background: var(--surface-mid); }
+.sig-col-hdr .sig-all-box {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 14px; height: 14px; font-size: 10px; line-height: 1;
+  border: 1px solid var(--border); border-radius: 4px; color: transparent;
+}
+.sig-col-hdr.all-on .sig-all-box {
+  background: var(--blue); border-color: var(--blue); color: #fff;
+}
+.sig-acct-row {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 14px; align-items: center; padding: 8px;
+}
+.sig-acct-row + .sig-acct-row { border-top: 1px solid var(--border); }
+.sig-acct-row:hover { background: var(--blue-hover); border-radius: 8px; }
+.sig-acct-who { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.sig-acct-who .acct-avatar { width: 30px; height: 30px; font-size: 12px; }
+.sig-pill {
+  min-width: 88px; padding: 4px 12px; font-size: 11.5px; font-weight: 600;
+  border: 1px solid var(--border); border-radius: 14px;
+  background: var(--surface); color: var(--text-dim); cursor: pointer;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+.sig-pill:hover { border-color: var(--blue-light); color: var(--text); }
+.sig-pill.on { background: var(--blue); border-color: var(--blue); color: #fff; }
+.sig-acct-note { font-size: 11px; color: var(--text-dim); padding-top: 8px; }
 
 /* Executar regras agora — lista de regras com checkbox */
 .run-now-rules {

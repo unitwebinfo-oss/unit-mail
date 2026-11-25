@@ -8,6 +8,7 @@ import { createHash, randomUUID } from 'crypto';
 import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } from 'fs';
 import { isDefaultFolderId } from '../shared/types';
 import { normSearch } from '../shared/textNorm';
+import { parseMailDate, parseReceivedDate } from './mailHeaders';
 import { safeFsName } from '../shared/fsName';
 import { resolveFolderName, folderKindOf, type FolderKind } from '../shared/folderNames';
 import { appLanguage } from './language';
@@ -249,10 +250,12 @@ export class PstService {
    * o que embaralhava a ordem cronológica — repairEmlNames corrige.
    */
   private emlDateMs(raw: Buffer): number | null {
-    const head = raw.slice(0, 8192).toString('utf8');
-    const m = /^Date:\s*(.+?)\r?$/im.exec(head.replace(/\r?\n[ \t]+/g, ' '));
-    const t = m ? Date.parse(m[1]) : NaN;
-    return isNaN(t) ? null : t;
+    const head = raw.slice(0, 8192).toString('utf8').replace(/\r?\n[ \t]+/g, ' ');
+    const m = /^Date:\s*(.+?)\r?$/im.exec(head);
+    // Date: malformado/ausente → o topo da cadeia Received: traz a hora em
+    // que o SEU servidor recebeu a mensagem (melhor estimativa possível).
+    const d = parseMailDate(m?.[1]) ?? parseReceivedDate(head.match(/^Received:[^\n]*/im)?.[0]?.slice(9));
+    return d ? d.getTime() : null;
   }
 
   /** Lê só os primeiros 8 KB do arquivo — suficiente para o cabeçalho Date:. */
@@ -1298,6 +1301,13 @@ export class PstService {
       return Array.isArray(v) ? String(v[0] ?? '') : v != null ? String(v) : '';
     };
     const umClass = hdr('x-um-class');
+    // Date: ausente/malformado (relé antigo, cliente bugado) → parser leniente
+    // no header bruto; ainda sem data → topo da cadeia Received: (hora em que
+    // o servidor recebeu). Era isso que deixava mensagens "sem data" na lista.
+    const msgDate =
+      (parsed.date instanceof Date && !isNaN(parsed.date.getTime()) ? parsed.date : null) ??
+      parseMailDate(hdr('date')) ??
+      parseReceivedDate(hdr('received'));
     const s: ItemSummary = {
       index,
       messageClass: umClass || 'IPM.Note',
@@ -1309,8 +1319,8 @@ export class PstService {
       senderEmailAddress: from.address || '',
       displayTo: to.map((a) => (a.name ? `${a.name} <${a.address}>` : a.address || '')).join('; '),
       displayCC: '',
-      sentTime: parsed.date ? parsed.date.toISOString() : null,
-      deliveryTime: parsed.date ? parsed.date.toISOString() : null,
+      sentTime: msgDate ? msgDate.toISOString() : null,
+      deliveryTime: msgDate ? msgDate.toISOString() : null,
       // Mesmo filtro do painel de leitura: inline-com-cid (logo de
       // assinatura) não é anexo — sem isso o clipe aparecia à toa.
       hasAttachments: (parsed.attachments || []).some(

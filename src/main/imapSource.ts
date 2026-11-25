@@ -2,6 +2,7 @@ import { ImapFlow, type FetchMessageObject, type ListTreeResponse, type MessageS
 import { simpleParser } from 'mailparser';
 import type { MailBackend } from './mailBackend';
 import { normSearch } from '../shared/textNorm';
+import { parseMailDate, parseReceivedDate } from './mailHeaders';
 import { folderKindOf } from '../shared/folderNames';
 import type {
   AccountConfig,
@@ -262,6 +263,14 @@ export class ImapMailSource implements MailBackend {
       const fromAddr = parsed.from?.value?.[0];
       const toAddr = (parsed.to as { value?: Array<{ name?: string; address?: string }> } | undefined)?.value;
       const ccAddr = (parsed.cc as { value?: Array<{ name?: string; address?: string }> } | undefined)?.value;
+      const hdrStr = (n: string): string => {
+        const v = parsed.headers?.get?.(n);
+        return Array.isArray(v) ? String(v[0] ?? '') : v != null ? String(v) : '';
+      };
+      const msgDate =
+        (parsed.date instanceof Date && !isNaN(parsed.date.getTime()) ? parsed.date : null) ??
+        parseMailDate(hdrStr('date')) ??
+        parseReceivedDate(hdrStr('received'));
 
       return {
         index: uid,
@@ -272,8 +281,8 @@ export class ImapMailSource implements MailBackend {
         senderEmailAddress: fromAddr?.address || '',
         displayTo: addrList(toAddr),
         displayCC: addrList(ccAddr),
-        sentTime: parsed.date ? parsed.date.toISOString() : null,
-        deliveryTime: parsed.date ? parsed.date.toISOString() : null,
+        sentTime: msgDate ? msgDate.toISOString() : null,
+        deliveryTime: msgDate ? msgDate.toISOString() : null,
         hasAttachments: attachments.filter((a) => !a.isInline).length > 0,
         isRead: true,
         importance: 0,

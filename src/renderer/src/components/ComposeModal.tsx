@@ -1,5 +1,6 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Icon } from '../icons';
+import { WinControls } from './WinControls';
 import { attachIcon } from './ReadingPane';
 import { applyTheme } from '../utils';
 import { t, useLang } from '../i18n';
@@ -268,8 +269,79 @@ export function ComposeModal({ draft, accounts, onClose, onSent, windowed }: Com
   const [error, setError] = useState('');
   const [badAddrs, setBadAddrs] = useState<string[]>([]);
   const editorRef = useRef<HTMLDivElement>(null);
+  const editorWrapRef = useRef<HTMLDivElement>(null);
+  // Imagem selecionada no corpo — overlay com alças de redimensionamento
+  // (o contentEditable do Chromium não tem as alças nativas do Outlook).
+  const [imgSel, setImgSel] = useState<{
+    el: HTMLImageElement;
+    x: number;
+    y: number;
+    w: number;
+    h: number;
+  } | null>(null);
   const sigReady = useRef(false);
   const kind = draft.kind || 'new';
+
+  const updateImgSel = (el: HTMLImageElement | null) => {
+    const wrap = editorWrapRef.current;
+    if (!el || !wrap || !el.isConnected) {
+      setImgSel(null);
+      return;
+    }
+    const wr = wrap.getBoundingClientRect();
+    const r = el.getBoundingClientRect();
+    setImgSel({ el, x: r.left - wr.left, y: r.top - wr.top, w: r.width, h: r.height });
+  };
+
+  const setImgWidth = (img: HTMLImageElement, w: number) => {
+    const px = Math.round(Math.max(24, w));
+    // atributo width p/ clientes antigos (Outlook desktop) + style p/ webmails
+    img.setAttribute('width', String(px));
+    img.style.width = `${px}px`;
+    img.style.height = 'auto';
+  };
+
+  const onEditorMouseDown = (e: React.MouseEvent) => {
+    if (e.target instanceof HTMLImageElement) {
+      updateImgSel(e.target);
+      return;
+    }
+    setImgSel(null);
+  };
+
+  const onEditorDoubleClick = (e: React.MouseEvent) => {
+    // Duplo clique na imagem alterna largura máxima da área ↔ tamanho natural
+    if (!(e.target instanceof HTMLImageElement)) return;
+    const img = e.target;
+    const ed = editorRef.current;
+    if (!ed) return;
+    const full = Math.max(80, ed.clientWidth - 16);
+    const natural = img.naturalWidth || img.width || full;
+    const atFull = img.getBoundingClientRect().width >= full - 8;
+    setImgWidth(img, atFull ? Math.min(natural, full) : full);
+    updateImgSel(img);
+  };
+
+  const startImgResize = (e: React.MouseEvent, corner: 'nw' | 'ne' | 'sw' | 'se') => {
+    e.preventDefault();
+    e.stopPropagation();
+    const img = imgSel?.el;
+    if (!img) return;
+    const startX = e.clientX;
+    const startW = img.getBoundingClientRect().width;
+    const dirX = corner === 'ne' || corner === 'se' ? 1 : -1;
+    const onMove = (ev: MouseEvent) => {
+      // Arrastar pela quina mantém a proporção (altura = auto), como no Outlook
+      setImgWidth(img, startW + dirX * (ev.clientX - startX));
+      updateImgSel(img);
+    };
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  };
 
   const exec = (cmd: string, value?: string) => {
     document.execCommand(cmd, false, value);
@@ -599,7 +671,31 @@ export function ComposeModal({ draft, accounts, onClose, onSent, windowed }: Com
               <button className="btn btn-ghost" onClick={() => setLinkMode(false)}>{t('Cancelar')}</button>
             </div>
           )}
-          <div ref={editorRef} className="compose-editor" contentEditable suppressContentEditableWarning />
+          <div ref={editorWrapRef} className="compose-editor-wrap">
+            <div
+              ref={editorRef}
+              className="compose-editor"
+              contentEditable
+              suppressContentEditableWarning
+              onMouseDown={onEditorMouseDown}
+              onDoubleClick={onEditorDoubleClick}
+              onScroll={() => imgSel && updateImgSel(imgSel.el)}
+            />
+            {imgSel && (
+              <div
+                className="img-sel-box"
+                style={{ left: imgSel.x, top: imgSel.y, width: imgSel.w, height: imgSel.h }}
+              >
+                {(['nw', 'ne', 'sw', 'se'] as const).map((c) => (
+                  <span
+                    key={c}
+                    className={`img-handle ${c}`}
+                    onMouseDown={(e) => startImgResize(e, c)}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
           {attachPaths.length > 0 && (
             <div className="compose-attach">
               {attachPaths.map((p, i) => (
@@ -661,6 +757,7 @@ export function ComposeHost({ draftId }: { draftId: string }) {
   const [accounts, setAccounts] = useState<AccountConfig[]>([]);
   const [gone, setGone] = useState(false);
   const [winChrome, setWinChrome] = useState(false);
+  const [linuxChrome, setLinuxChrome] = useState(false);
 
   useEffect(() => {
     let alive = true;
@@ -689,7 +786,11 @@ export function ComposeHost({ draftId }: { draftId: string }) {
       .catch(() => {});
     window.outlook
       .getAppInfo?.()
-      .then((i) => alive && setWinChrome(i.platform !== 'darwin'))
+      .then((i) => {
+        if (!alive) return;
+        setWinChrome(i.platform !== 'darwin');
+        setLinuxChrome(i.platform === 'linux');
+      })
       .catch(() => {});
     return () => {
       alive = false;
@@ -707,9 +808,10 @@ export function ComposeHost({ draftId }: { draftId: string }) {
   return (
     <div className="compose-app">
       {winChrome && (
-        <div className="win-titlebar">
+        <div className={`win-titlebar${linuxChrome ? ' custom-btns' : ''}`}>
           <Icon name="envelope" size={16} />
           <span className="win-title">{winTitle} — Unit Mail</span>
+          {linuxChrome && <WinControls />}
         </div>
       )}
       <ComposeModal

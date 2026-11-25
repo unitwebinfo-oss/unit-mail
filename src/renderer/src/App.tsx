@@ -16,6 +16,7 @@ import { ReminderDialog, type ReminderEvent } from './components/ReminderDialog'
 import { CalendarModule } from './modules/CalendarModule';
 import { ContactsModule } from './modules/ContactsModule';
 import { TasksModule } from './modules/TasksModule';
+import { WinControls } from './components/WinControls';
 import { Icon } from './icons';
 import { findFirstFolder, containerClassForModule, applyTheme, arcFolderId, playReminderSound } from './utils';
 import { isDefaultFolderId } from '../../shared/types';
@@ -155,6 +156,7 @@ export default function App() {
   const [folderOrders, setFolderOrders] = useState<Record<string, string[]>>({});
   /** Windows usa barra de título integrada (titleBarOverlay) — faixa azul do app. */
   const [winChrome, setWinChrome] = useState(false);
+  const [linuxChrome, setLinuxChrome] = useState(false);
   /** Janela de mensagem maximizada (duplo clique num email). */
   const [msgMax, setMsgMax] = useState(false);
   /** Release mais nova no GitHub — exibida nas Configurações. */
@@ -547,7 +549,12 @@ export default function App() {
     // No Windows o app desenha a faixa de título azul (botões do SO por cima)
     // Barra azul integrada onde o titleBarOverlay existe (Windows e Linux);
     // no macOS a moldura nativa continua.
-    window.outlook.getAppInfo?.().then((i) => setWinChrome(i.platform !== 'darwin'));
+    window.outlook.getAppInfo?.().then((i) => {
+      setWinChrome(i.platform !== 'darwin');
+      // Linux abre com frame:false — os botões de janela são HTML (o
+      // overlay do Chromium desenhava cápsula com sombra no tema escuro)
+      setLinuxChrome(i.platform === 'linux');
+    });
     // Verificação de atualização — feita dentro das Configurações.
     // Idioma salvo — decide t() e os nomes de exibição das pastas padrão
     window.outlook.getLanguage?.().then((l) => initLang(l));
@@ -609,6 +616,8 @@ export default function App() {
       }, 5000);
     });
     // Progresso das tarefas de Enviar/Receber (barra de status + diálogo)
+    let lastLiveRefresh = 0;
+    let lastLiveSources = 0;
     const unsubProg = window.outlook.onSyncProgress?.((ev) => {
       setSyncTasks((prev) => {
         // O diálogo mostra só progresso por conta — o detalhe por mensagem
@@ -620,6 +629,21 @@ export default function App() {
         next[i] = merged;
         return next;
       });
+      // Mensagem entregue → entra na pasta ABERTA conforme chega (como o
+      // Outlook), em vez de aparecerem todas de uma vez só no fim do sync.
+      // Throttled: cada mensagem geraria um reload; refreshOpenFolder já
+      // sai cedo quando a contagem não mudou.
+      if (ev.item?.status === 'ok') {
+        const now = Date.now();
+        if (now - lastLiveRefresh >= 1500) {
+          lastLiveRefresh = now;
+          void refreshOpenFolder();
+        }
+        if (now - lastLiveSources >= 4000) {
+          lastLiveSources = now;
+          void refreshSources(); // badges das outras pastas
+        }
+      }
     });
     // Envio em segundo plano: o modal fecha ao clicar em Enviar — o main
     // move a mensagem da Caixa de Saída para Itens Enviados ao concluir
@@ -2719,12 +2743,13 @@ export default function App() {
   return (
     <div className={`app${winChrome ? ' with-titlebar' : ''}`}>
       {winChrome && (
-        <div className="win-titlebar">
+        <div className={`win-titlebar${linuxChrome ? ' custom-btns' : ''}`}>
           <Icon name="envelope" size={16} />
           <span className="win-title">Unit Mail</span>
           <span className="beta-pill" title="Versão Beta — em fase de testes. Reporte problemas no GitHub.">
             Beta
           </span>
+          {linuxChrome && <WinControls />}
         </div>
       )}
 

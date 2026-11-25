@@ -1004,12 +1004,15 @@ function windowChrome():
       titleBarStyle: 'hidden';
       titleBarOverlay: { color: string; symbolColor: string; height: number };
     }
+  | { frame: false }
   | Record<string, never> {
-  // Barra de título integrada: os botões min/max/close do sistema ficam
-  // sobre uma faixa azul renderizada pelo app (estilo Office moderno).
-  // titleBarOverlay é suportado no Windows e no Linux; sem ele o Linux
-  // mostrava a moldura nativa (barra preta do GNOME/KDE) em vez do azul.
-  return process.platform === 'win32' || process.platform === 'linux'
+  // Windows: titleBarOverlay põe os botões do sistema sobre a faixa azul
+  // renderizada pelo app (estilo Office moderno) e combina com o tema nativo.
+  // Linux: o overlay do Chromium desenha uma cápsula com sombra própria atrás
+  // dos botões — fora do controle do app e destoa do tema escuro. Trocamos
+  // por frame:false e botões HTML na .win-titlebar (min/max/close via IPC).
+  if (process.platform === 'linux') return { frame: false };
+  return process.platform === 'win32'
     ? {
         titleBarStyle: 'hidden' as const,
         titleBarOverlay: { color: '#0173c7', symbolColor: '#ffffff', height: 36 },
@@ -1365,6 +1368,15 @@ function registerIpc(): void {
     }
   });
 
+  // Botões da barra de título HTML (Linux — sem overlay do SO): a janela
+  // alvo é a que enviou o evento (principal ou de composição).
+  ipcMain.on('win:control', (e, action: string) => {
+    const w = BrowserWindow.fromWebContents(e.sender);
+    if (!w || w.isDestroyed()) return;
+    if (action === 'min') w.minimize();
+    else if (action === 'max') (w.isMaximized() ? w.unmaximize() : w.maximize());
+    else if (action === 'close') w.close();
+  });
   ipcMain.handle('app:info', () => ({
     name: 'Unit Mail',
     version: app.getVersion(),
